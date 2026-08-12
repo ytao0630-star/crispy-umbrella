@@ -280,3 +280,10 @@ td.wrap, th.wrap { white-space: normal; }
 .log-item { padding: 9px 4px; border-bottom: 1px dashed #e2e8f0; font-size: 13px; color: #334155; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .log-act { background: #e0f2fe; color: #0369a1; border-radius: 4px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
 .log-meta { margin-left: auto; color: #94a3b8; font-size: 12px; }
+/* ===== 内嵌水电抄表区块（资产台账/公寓/厂房详情） ===== */
+.meter-embed { margin-top: 16px; padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
+.meter-embed.empty { color: #94a3b8; font-size: 13px; text-align: center; padding: 14px; }
+.meter-embed .embed-title { font-size: 13px; font-weight: 600; color: #0369a1; margin-bottom: 8px; }
+.meter-embed .embed-table { font-size: 12.5px; }
+.meter-embed .embed-table th { background: #e0f2fe; color: #075985; }
+.meter-embed .embed-table td, .meter-embed .embed-table th { padding: 5px 8px; }

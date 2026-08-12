@@ -202,7 +202,7 @@ async function renderAssets() {
         <td>${esc(u.code)}</td><td>${esc(bname(u.building_id))}</td><td>${tag(u.type)}</td>
         <td>${fmt(u.area)}</td><td>${u.rent_price ? yuan(u.rent_price) : '-'}</td><td>${u.property_price ? yuan(u.property_price) : '-'}</td>
         <td>${tag(u.status)}</td><td>${esc(ccode(u.current_contract_id))}</td><td>${esc(cname(u.current_customer_id))}</td>
-        ${can('unit_edit') ? `<td><button class="btn sm ghost" onclick="editUnit(${u.id})">编辑</button></td>` : ''}
+        ${can('unit_edit') ? `<td><button class="btn sm ghost" onclick="openUnitRecords(${u.id})">详情</button><button class="btn sm ghost" onclick="editUnit(${u.id})">编辑</button></td>` : ''}
       </tr>`).join('') || '<tr><td colspan="10" class="empty">无记录</td></tr>';
   }
   $$('.filters select').forEach(s => s.onchange = renderList);
@@ -475,6 +475,7 @@ window.openRentalModal = async function(roomId, rentalId) {
 window.openRoomHistory = async function(roomId) {
   const room = CACHE.apartmentRooms.find(x => x.id == roomId);
   const rentals = await API.get('/api/apartment-rentals?room_id=' + roomId);
+  await refreshMeters();
   const list = rentals.slice().reverse();
   openModal(`房间 ${esc(room.room_no)} 出租记录（${list.length} 次）`, `
     <div class="apt-history">
@@ -487,6 +488,7 @@ window.openRoomHistory = async function(roomId) {
           ${can('unit_edit') ? `<div class="hist-ops"><button class="btn sm ghost" onclick="openRentalModal(null, ${r.id})">编辑</button> <button class="btn sm red" onclick="deleteRental(${r.id})">删除</button></div>` : ''}
         </div>`).join('') || '<div class="empty">暂无出租记录</div>'}
     </div>
+    ${(room && room.unit_id) ? meterBlockHtml(room.unit_id) : ''}
     ${can('unit_edit') ? `<div class="btn-row"><button class="btn" onclick="openRentalModal(${roomId})">+ 新增本次出租</button></div>` : ''}
   `, null, '关闭');
 };
@@ -807,6 +809,7 @@ async function _renderFactory(kind) {
 window.openUnitRecords = async function(unitId) {
   const u = CACHE.units.find(x => x.id == unitId);
   const contracts = await API.get('/api/contracts?unit_id=' + unitId);
+  await refreshMeters();
   const rows = contracts.map(ct => `
     <tr>
       <td>${tag(ct.type)}</td><td>${esc(ct.code || '-')}</td>
@@ -819,7 +822,8 @@ window.openUnitRecords = async function(unitId) {
     <div class="table-wrap"><table>
       <thead><tr><th>类型</th><th>合同号</th><th>客户</th><th>起止</th><th>金额</th><th>周期</th><th>押金</th><th>状态</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table></div>`, null, '关闭');
+    </table></div>
+    ${meterBlockHtml(unitId)}`, null, '关闭');
 };
 
 // ---------- 客户 CRM ----------
@@ -1291,85 +1295,143 @@ function meterLog(action, detail) {
   localStorage.setItem('park_meter_logs', JSON.stringify(logs.slice(0, 50)));
 }
 async function renderMeter() {
-  const [rows, units, customers] = await Promise.all([
-    API.get('/api/meter-records'), API.get('/api/units'), API.get('/api/customers'),
+  const [rows, units, customers, meterUnits] = await Promise.all([
+    API.get('/api/meter-records'), API.get('/api/units'), API.get('/api/customers'), API.get('/api/meter-units'),
   ]);
   meterRows = rows;
+  window.METER_ROWS = rows;
   CACHE.units = units; CACHE.customers = customers;
   const thisMonth = today().slice(0, 7);
-  const mRows = rows.filter(r => r.bill_month === thisMonth);
   const sum = (arr, k) => arr.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+  const mRows = rows.filter(r => r.bill_month === thisMonth);
   const kWater = sum(mRows, 'water_fee'), kElec = sum(mRows, 'electric_fee');
-  const tenants = [...new Set(rows.map(r => r.tenant_name || '未关联租户').filter(Boolean))];
-  const periods = [...new Set(rows.map(r => r.bill_month).filter(Boolean))].sort().reverse();
+  const meteredUnitIds = new Set(rows.map(r => r.unit_id));
+  const doneCount = meterUnits.filter(u => meteredUnitIds.has(u.unit_id)).length;
+  const pendingCount = meterUnits.length - doneCount;
+  const bizOpts = ['', '公寓租赁', '厂房租赁', '厂房销售'];
   $('#view').innerHTML = `
-    <div class="section-title">水电抄表 <span class="sub">水 / 电双表 · 按租户分组 · 费用自动核算</span></div>
+    <div class="section-title">水电抄表 <span class="sub">按资产台账签约单元关联 · 水/电双表 · 费用自动核算</span></div>
     <div class="grid kpi-grid">
-      <div class="kpi blue"><div class="label">抄表总笔数</div><div class="value">${rows.length}</div></div>
-      <div class="kpi green"><div class="label">本月水费</div><div class="value">${yuan(kWater)}</div></div>
-      <div class="kpi amber"><div class="label">本月电费</div><div class="value">${yuan(kElec)}</div></div>
-      <div class="kpi purple"><div class="label">本月合计</div><div class="value">${yuan(kWater + kElec)}</div></div>
+      <div class="kpi blue"><div class="label">应抄表单元</div><div class="value">${meterUnits.length}</div></div>
+      <div class="kpi green"><div class="label">已抄表单元</div><div class="value">${doneCount}</div></div>
+      <div class="kpi amber"><div class="label">待抄表单元</div><div class="value">${pendingCount}</div></div>
+      <div class="kpi purple"><div class="label">本月水电合计</div><div class="value">${yuan(kWater + kElec)}</div></div>
     </div>
-    <div class="filters">
-      <input id="mSearch" placeholder="搜索租户 / 编号 / 铺位">
-      <select id="mTenant"><option value="">全部租户</option>${sel(tenants)}</select>
-      <select id="mPeriod"><option value="">全部周期</option>${sel(periods)}</select>
-      ${can('meter_add') ? '<button class="btn" id="mAdd">+ 新增抄表</button>' : ''}
-      ${can('meter_add') ? '<button class="btn ghost" id="mImport">导入</button>' : ''}
-      <button class="btn ghost" id="mExport">导出</button>
-      <button class="btn ghost" id="mLog">操作记录</button>
-      <button class="btn danger ghost" id="mDel">删除选中</button>
+    <div class="btn-row" style="margin-bottom:10px">
+      <button class="btn" id="mShowUnits">应抄表单元</button>
+      <button class="btn ghost" id="mShowRecords">抄表记录明细（${rows.length}）</button>
     </div>
-    <div class="table-wrap"><table>
-      <thead><tr>
-        <th><input type="checkbox" id="mAll"></th>
-        <th>抄表编号</th><th>关联铺位</th><th>关联租户</th><th>抄表日期</th><th>费用周期</th>
-        <th>水·上期</th><th>水·本期</th><th>水·单价</th><th>水·费用</th>
-        <th>电·上期</th><th>电·本期</th><th>电·单价</th><th>电·费用</th>
-        <th>合计</th><th>操作</th>
-      </tr></thead>
-      <tbody id="mTable"></tbody>
-    </table></div>
-    <input type="file" id="mFile" accept=".csv" style="display:none">`;
-  function renderList() {
-    const kw = $('#mSearch').value.trim();
-    const ft = $('#mTenant').value;
-    const fp = $('#mPeriod').value;
-    let list = meterRows.filter(r =>
-      (!kw || (r.tenant_name || '').includes(kw) || (r.meter_no || '').includes(kw) || (r.unit_code || '').includes(kw)) &&
-      (!ft || r.tenant_name === ft) && (!fp || r.bill_month === fp));
-    const groups = {};
-    list.forEach(r => { const k = r.tenant_name || '未关联租户'; if (!groups[k]) groups[k] = []; groups[k].push(r); });
-    let html = '';
-    Object.keys(groups).forEach(g => {
-      const gRows = groups[g];
-      const gW = sum(gRows, 'water_fee'), gE = sum(gRows, 'electric_fee');
-      html += `<tr class="grp"><td colspan="16">🏢 ${esc(g)} <span class="grp-sum">水费 ${yuan(gW)} · 电费 ${yuan(gE)} · 合计 ${yuan(gW + gE)}</span></td></tr>`;
-      html += gRows.map(r => `<tr data-id="${r.id}">
-        <td><input type="checkbox" class="mchk" value="${r.id}"></td>
-        <td>${esc(r.meter_no)}</td><td>${esc(r.unit_code || '-')}</td><td>${esc(r.tenant_name || '-')}</td>
-        <td>${esc(r.reading_date)}</td><td>${esc(r.bill_month)}</td>
-        <td>${fmt(r.water_prev)}</td><td>${fmt(r.water_curr)}</td><td>${fmt(r.water_price)}</td><td>${yuan(r.water_fee)}</td>
-        <td>${fmt(r.electric_prev)}</td><td>${fmt(r.electric_curr)}</td><td>${fmt(r.electric_price)}</td><td>${yuan(r.electric_fee)}</td>
-        <td>${yuan(r.total_fee)}</td>
-        <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="editMeter(${r.id})">编辑</button> ` : ''}<button class="btn sm ghost" onclick="delMeter(${r.id})">删除</button></td>
-      </tr>`).join('');
-    });
-    $('#mTable').innerHTML = html || '<tr><td colspan="16" class="empty">无记录</td></tr>';
-    $('#mAll').onchange = () => { $$('.mchk').forEach(c => c.checked = $('#mAll').checked); };
+    <div id="meterUnitsView"></div>
+    <div id="meterRecordsView" style="display:none"></div>`;
+
+  function renderUnitsView() {
+    const biz = $('#mBiz') ? $('#mBiz').value : '';
+    const kw = $('#mSearchUnit') ? $('#mSearchUnit').value.trim() : '';
+    let list = meterUnits.filter(u =>
+      (!biz || u.biz === biz) &&
+      (!kw || (u.unit_code || '').includes(kw) || (u.customer_name || '').includes(kw) || (u.building_name || '').includes(kw)));
+    $('#meterUnitsView').innerHTML = `
+      <div class="filters">
+        <select id="mBiz">${bizOpts.map(o => `<option value="${o}">${o || '全部业务'}</option>`).join('')}</select>
+        <input id="mSearchUnit" placeholder="搜索单元 / 租户 / 楼栋">
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>业务类型</th><th>单元</th><th>楼栋</th><th>关联租户/买方</th><th>状态</th>
+          <th>最近抄表</th><th>笔数</th><th>本月</th><th>操作</th>
+        </tr></thead>
+        <tbody id="muTable"></tbody>
+      </table></div>`;
+    $('#muTable').innerHTML = list.map(u => {
+      const has = meteredUnitIds.has(u.unit_id);
+      const thisMonthDone = rows.some(r => r.unit_id == u.unit_id && r.bill_month === thisMonth);
+      const badge = thisMonthDone ? '<span class="tag green">本月已抄</span>' : (has ? '<span class="tag">历史已抄</span>' : '<span class="tag amber">待抄</span>');
+      return `<tr>
+        <td>${tag(u.biz)}</td><td><b>${esc(u.unit_code)}</b></td><td>${esc(u.building_name || '-')}</td>
+        <td>${esc(u.customer_name || '待补充')}</td><td>${tag(u.unit_status)}</td>
+        <td>${esc(u.last_month || '-')}</td><td>${u.meter_count || 0}</td><td>${badge}</td>
+        <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="openMeterModalForUnit(${u.unit_id})">+ 抄表</button> ` : ''}<button class="btn sm ghost" onclick="openUnitMeterRecords(${u.unit_id})">记录</button></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9" class="empty">无应抄表单元</td></tr>';
+    $('#mBiz').onchange = renderUnitsView;
+    $('#mSearchUnit').oninput = renderUnitsView;
   }
-  $('#mSearch').oninput = renderList;
-  $('#mTenant').onchange = renderList;
-  $('#mPeriod').onchange = renderList;
-  if (can('meter_add')) {
-    $('#mAdd').onclick = () => openMeterModal(null);
-    $('#mImport').onclick = () => $('#mFile').click();
+
+  function renderRecordsView() {
+    const tenants = [...new Set(rows.map(r => r.tenant_name || '未关联租户').filter(Boolean))];
+    const periods = [...new Set(rows.map(r => r.bill_month).filter(Boolean))].sort().reverse();
+    $('#meterRecordsView').innerHTML = `
+      <div class="filters">
+        <input id="mSearch" placeholder="搜索租户 / 编号 / 铺位">
+        <select id="mTenant"><option value="">全部租户</option>${sel(tenants)}</select>
+        <select id="mPeriod"><option value="">全部周期</option>${sel(periods)}</select>
+        ${can('meter_add') ? '<button class="btn" id="mAdd">+ 新增抄表</button>' : ''}
+        ${can('meter_add') ? '<button class="btn ghost" id="mImport">导入</button>' : ''}
+        <button class="btn ghost" id="mExport">导出</button>
+        <button class="btn ghost" id="mLog">操作记录</button>
+        <button class="btn danger ghost" id="mDel">删除选中</button>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th><input type="checkbox" id="mAll"></th>
+          <th>抄表编号</th><th>关联铺位</th><th>关联租户</th><th>抄表日期</th><th>费用周期</th>
+          <th>水·上期</th><th>水·本期</th><th>水·单价</th><th>水·费用</th>
+          <th>电·上期</th><th>电·本期</th><th>电·单价</th><th>电·费用</th>
+          <th>合计</th><th>操作</th>
+        </tr></thead>
+        <tbody id="mTable"></tbody>
+      </table></div>
+      <input type="file" id="mFile" accept=".csv" style="display:none">`;
+    function renderList() {
+      const kw = $('#mSearch').value.trim();
+      const ft = $('#mTenant').value;
+      const fp = $('#mPeriod').value;
+      let list = meterRows.filter(r =>
+        (!kw || (r.tenant_name || '').includes(kw) || (r.meter_no || '').includes(kw) || (r.unit_code || '').includes(kw)) &&
+        (!ft || r.tenant_name === ft) && (!fp || r.bill_month === fp));
+      const groups = {};
+      list.forEach(r => { const k = r.tenant_name || '未关联租户'; if (!groups[k]) groups[k] = []; groups[k].push(r); });
+      let html = '';
+      Object.keys(groups).forEach(g => {
+        const gRows = groups[g];
+        const gW = sum(gRows, 'water_fee'), gE = sum(gRows, 'electric_fee');
+        html += `<tr class="grp"><td colspan="16">🏢 ${esc(g)} <span class="grp-sum">水费 ${yuan(gW)} · 电费 ${yuan(gE)} · 合计 ${yuan(gW + gE)}</span></td></tr>`;
+        html += gRows.map(r => `<tr data-id="${r.id}">
+          <td><input type="checkbox" class="mchk" value="${r.id}"></td>
+          <td>${esc(r.meter_no)}</td><td>${esc(r.unit_code || '-')}</td><td>${esc(r.tenant_name || '-')}</td>
+          <td>${esc(r.reading_date)}</td><td>${esc(r.bill_month)}</td>
+          <td>${fmt(r.water_prev)}</td><td>${fmt(r.water_curr)}</td><td>${fmt(r.water_price)}</td><td>${yuan(r.water_fee)}</td>
+          <td>${fmt(r.electric_prev)}</td><td>${fmt(r.electric_curr)}</td><td>${fmt(r.electric_price)}</td><td>${yuan(r.electric_fee)}</td>
+          <td>${yuan(r.total_fee)}</td>
+          <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="editMeter(${r.id})">编辑</button> ` : ''}<button class="btn sm ghost" onclick="delMeter(${r.id})">删除</button></td>
+        </tr>`).join('');
+      });
+      $('#mTable').innerHTML = html || '<tr><td colspan="16" class="empty">无记录</td></tr>';
+      $('#mAll').onchange = () => { $$('.mchk').forEach(c => c.checked = $('#mAll').checked); };
+    }
+    $('#mSearch').oninput = renderList;
+    $('#mTenant').onchange = renderList;
+    $('#mPeriod').onchange = renderList;
+    if (can('meter_add')) {
+      $('#mAdd').onclick = () => openMeterModal(null);
+      $('#mImport').onclick = () => $('#mFile').click();
+    }
+    $('#mExport').onclick = exportMeterCSV;
+    $('#mLog').onclick = showMeterLog;
+    $('#mDel').onclick = deleteSelectedMeters;
+    $('#mFile').onchange = (e) => importMeterCSV(e.target.files[0]);
+    renderList();
   }
-  $('#mExport').onclick = exportMeterCSV;
-  $('#mLog').onclick = showMeterLog;
-  $('#mDel').onclick = deleteSelectedMeters;
-  $('#mFile').onchange = (e) => importMeterCSV(e.target.files[0]);
-  renderList();
+
+  $('#mShowUnits').onclick = () => {
+    $('#meterUnitsView').style.display = ''; $('#meterRecordsView').style.display = 'none';
+    $('#mShowUnits').className = 'btn'; $('#mShowRecords').className = 'btn ghost'; renderUnitsView();
+  };
+  $('#mShowRecords').onclick = () => {
+    $('#meterUnitsView').style.display = 'none'; $('#meterRecordsView').style.display = '';
+    $('#mShowRecords').className = 'btn'; $('#mShowUnits').className = 'btn ghost'; renderRecordsView();
+  };
+  renderUnitsView();
 }
 window.openMeterModal = function (rec) {
   rec = rec || {};
@@ -1471,6 +1533,42 @@ window.showMeterLog = function () {
   const logs = JSON.parse(localStorage.getItem('park_meter_logs') || '[]');
   const html = logs.length ? logs.map(l => `<div class="log-item"><span class="log-act">${esc(l.action)}</span> ${esc(l.detail)} <span class="log-meta">${esc(l.who)} · ${esc(l.at)}</span></div>`).join('') : '<div class="empty">暂无操作记录</div>';
   openModal('操作记录', `<div class="log-list">${html}</div>`, null);
+};
+// 拉取全部抄表记录到全局缓存，供各模块详情内嵌展示
+window.refreshMeters = async function () {
+  try { window.METER_ROWS = await API.get('/api/meter-records'); }
+  catch (e) { window.METER_ROWS = []; }
+};
+// 给定单元，渲染其水电抄表记录区块（与资产台账/公寓/厂房双向关联）
+window.meterBlockHtml = function (unitId) {
+  const rows = (window.METER_ROWS || []).filter(r => r.unit_id == unitId);
+  if (!rows.length) return `<div class="meter-embed empty">🔌 水电抄表：该单元暂无抄表记录</div>`;
+  const sum = (k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+  const body = rows.slice().sort((a, b) => String(b.bill_month || '').localeCompare(String(a.bill_month || ''))).map(r => `<tr>
+    <td>${esc(r.meter_no)}</td><td>${esc(r.bill_month)}</td>
+    <td>${fmt(r.water_usage)} 吨</td><td>${yuan(r.water_fee)}</td>
+    <td>${fmt(r.electric_usage)} 度</td><td>${yuan(r.electric_fee)}</td>
+    <td>${yuan(r.total_fee)}</td></tr>`).join('');
+  return `<div class="meter-embed">
+    <div class="embed-title">💧 水电抄表（${rows.length} 笔）｜ 水费 ${yuan(sum('water_fee'))} · 电费 ${yuan(sum('electric_fee'))} · 合计 ${yuan(sum('total_fee'))}</div>
+    <div class="table-wrap"><table class="embed-table">
+      <thead><tr><th>编号</th><th>周期</th><th>用水量</th><th>水费</th><th>用电量</th><th>电费</th><th>合计</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+  </div>`;
+};
+// 以指定单元打开抄表弹窗（自动带出铺位与租户）
+window.openMeterModalForUnit = function (unitId) {
+  const u = (CACHE.units || []).find(x => x.id == unitId);
+  const tenant = (u && u.current_customer_id) ? (CACHE.customers || []).find(c => c.id == u.current_customer_id) : null;
+  openMeterModal({ unit_id: unitId, tenant_name: tenant ? tenant.name : '' });
+};
+// 查看某单元的全部抄表记录
+window.openUnitMeterRecords = function (unitId) {
+  const u = (CACHE.units || []).find(x => x.id == unitId) || {};
+  const body = `${meterBlockHtml(unitId)}
+    ${can('meter_add') ? `<div class="btn-row"><button class="btn" onclick="openMeterModalForUnit(${unitId})">+ 新增抄表</button></div>` : ''}`;
+  openModal(`水电抄表记录：${esc(u.code || '')}`, body, null, '关闭');
 };
 
 // ---------- 商户管理（租户信息 / 租赁周期 / 租金方式 / 分成收入 / 收电费）----------

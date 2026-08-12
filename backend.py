@@ -661,31 +661,7 @@ def _ensure_meter_records(conn):
         electric_prev REAL, electric_curr REAL, electric_price REAL,
         electric_usage REAL, electric_fee REAL,
         total_fee REAL, created_at TEXT)""")
-    cnt = c.execute("SELECT COUNT(*) AS n FROM meter_reading_records").fetchone()["n"]
-    if cnt > 0:
-        return
-    WATER, ELEC = 3.0, 1.5  # 抄表管理台账单价（元/吨、元/度），与抄表页一致，独立于公寓抄表 WATER_RATE/ELECTRIC_RATE
-    # 复用已有单元与租户：unit 1=宏达精密（A-01），unit 13=蓝海电子（C-001 公寓），unit 2=B-01
-    samples = [
-        # meter_no, unit_id, unit_code, tenant_name, date, month, w_prev, w_curr, w_price, e_prev, e_curr, e_price
-        ("00037", 1, "A-01", "宏达精密制造有限公司", "2026-06-29", "2026-06", 252, 289, WATER, 1446, 1880, ELEC),
-        ("00036", 1, "A-01", "宏达精密制造有限公司", "2026-05-30", "2026-05", 207, 252, WATER, 1273, 1446, ELEC),
-        ("00031", 2, "B-01", "锦程智能装备有限公司", "2026-06-29", "2026-06", 229, 265, WATER, 2763, 2899, ELEC),
-        ("00030", 2, "B-01", "锦程智能装备有限公司", "2026-05-28", "2026-05", 186, 229, WATER, 2337, 2763, ELEC),
-        ("00025", 13, "C-001", "蓝海电子科技", "2026-06-30", "2026-06", 365, 407, WATER, 2677, 2955, ELEC),
-        ("00024", 13, "C-001", "蓝海电子科技", "2026-05-31", "2026-05", 316, 365, WATER, 2592, 2677, ELEC),
-    ]
-    for m in samples:
-        (no, uid, code, tn, d, mon, wp, wc, wpr, ep, ec, epr) = m
-        wu = round(wc - wp, 2); wf = round(wu * wpr, 2)
-        eu = round(ec - ep, 2); ef = round(eu * epr, 2)
-        c.execute(
-            "INSERT INTO meter_reading_records "
-            "(meter_no,unit_id,unit_code,tenant_name,reading_date,bill_month,"
-            " water_prev,water_curr,water_price,water_usage,water_fee,"
-            " electric_prev,electric_curr,electric_price,electric_usage,electric_fee,total_fee,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (no, uid, code, tn, d, mon, wp, wc, wpr, wu, wf, ep, ec, epr, eu, ef, round(wf + ef, 2), now()))
+    # 不再灌演示数据：抄表记录由「水电抄表」页面按资产台账的应抄表单元录入。
     conn.commit()
 
 
@@ -1166,6 +1142,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_list("meter_readings"))
         if path == "/api/meter-records":
             return self._send_json(self.api_list("meter_reading_records"))
+        if path == "/api/meter-units":
+            return self._send_json(self.api_meter_units(q("biz")))
         if path == "/api/work-orders":
             return self._send_json(self.api_work_orders(q("status")))
         if path == "/api/roles":
@@ -1841,6 +1819,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
         row = c.execute("SELECT * FROM meter_reading_records WHERE id=?", (new_id,)).fetchone()
         conn.close()
         return row
+
+    def api_meter_units(self, biz=None):
+        """水电抄表「应抄表单元」：以资产台账中签约生效的合同单元为基准，
+        派生出 公寓租赁 / 厂房租赁 / 厂房销售 三类需抄表单元，并统计其抄表情况。
+        与水电抄表记录(meter_reading_records)双向关联：unit_id 相同即关联。"""
+        conn = self._db()
+        c = conn.cursor()
+        # 单元 + 当前生效/已售合同 + 合同客户；按合同类型与单元业态归类业务线
+        sql = """
+            SELECT u.id unit_id, u.code unit_code, u.type unit_type, u.status unit_status,
+                   b.name building_name,
+                   ct.id contract_id, ct.code contract_code, ct.type contract_type, ct.status contract_status,
+                   k.name customer_name,
+                   (SELECT COUNT(*) FROM meter_reading_records m WHERE m.unit_id = u.id) AS meter_count,
+                   (SELECT MAX(m.bill_month) FROM meter_reading_records m WHERE m.unit_id = u.id) AS last_month
+            FROM units u
+            JOIN contracts ct ON ct.id = u.current_contract_id
+            LEFT JOIN buildings b ON b.id = u.building_id
+            LEFT JOIN customers k ON k.id = ct.customer_id
+            WHERE (u.type='公寓' AND ct.type='租赁' AND ct.status='生效')
+               OR (u.type='厂房' AND ct.type='租赁' AND ct.status='生效')
+               OR (u.type='厂房' AND ct.type='销售')
+            ORDER BY u.type, u.code
+        """
+        rows = c.execute(sql).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d["unit_type"] == "公寓":
+                d["biz"] = "公寓租赁"
+            elif d["contract_type"] == "租赁":
+                d["biz"] = "厂房租赁"
+            else:
+                d["biz"] = "厂房销售"
+            out.append(d)
+        conn.close()
+        if biz:
+            out = [x for x in out if x["biz"] == biz]
+        return out
 
     def api_receipt(self, bill_id, body):
         conn = self._db()
