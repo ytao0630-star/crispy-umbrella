@@ -558,13 +558,17 @@ def _migrate_apartment_model(conn):
 
 
 def _ensure_apartment_sync_columns(conn):
-    """收费→公寓租赁同步所需的字段（幂等）。"""
+    """收费→公寓租赁同步 + 智能门锁字段（幂等）。"""
     c = conn.cursor()
     for sql in (
         "ALTER TABLE apartment_rentals ADD COLUMN contract_id INTEGER",
         "ALTER TABLE apartment_fees ADD COLUMN source TEXT DEFAULT '手工'",
         "ALTER TABLE apartment_fees ADD COLUMN bill_id INTEGER",
         "ALTER TABLE apartment_rooms ADD COLUMN unit_id INTEGER",
+        # 智能门锁：房卡/密码/指纹（DDL 有但旧表缺列，补 ALTER）
+        "ALTER TABLE apartment_rooms ADD COLUMN key_card TEXT",
+        "ALTER TABLE apartment_rooms ADD COLUMN room_password TEXT",
+        "ALTER TABLE apartment_rooms ADD COLUMN fingerprint TEXT",
     ):
         try:
             c.execute(sql)
