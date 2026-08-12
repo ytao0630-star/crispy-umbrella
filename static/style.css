@@ -110,6 +110,7 @@ td.wrap, th.wrap { white-space: normal; }
 .t-在租 { background: #dcfce7; color: #15803d; }
 .t-在售 { background: #dbeafe; color: #1d4ed8; }
 .t-已售 { background: #f1f5f9; color: #475569; }
+.t-自持 { background: #ede9fe; color: #6d28d9; }
 .t-装修中 { background: #fef9c3; color: #a16207; }
 .t-锁定 { background: #fee2e2; color: #b91c1c; }
 .t-待收 { background: #fef9c3; color: #a16207; }

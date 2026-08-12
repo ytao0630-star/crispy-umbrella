@@ -252,6 +252,7 @@ def init_db():
     _migrate_apartment_model(conn)
     _ensure_apartment_sync_columns(conn)
     _migrate_apartment_contracts(conn)
+    _ensure_units_note_column(conn)
     _ensure_meter_records(conn)
     _ensure_merchants(conn)
     _ensure_merchants_seed(conn)
@@ -634,6 +635,18 @@ def _migrate_apartment_contracts(conn):
             contract_id = c.lastrowid
         c.execute("UPDATE apartment_rentals SET contract_id=? WHERE id=?", (contract_id, r["rid"]))
     conn.commit()
+
+
+def _ensure_units_note_column(conn):
+    """资产台账单元补充 note 列，用于保留导入台账的原始状态说明（如玻璃厂转租/自用/自持）。"""
+    c = conn.cursor()
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(units)").fetchall()}
+    if "note" not in cols:
+        try:
+            c.execute("ALTER TABLE units ADD COLUMN note TEXT")
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _ensure_meter_records(conn):

@@ -177,7 +177,7 @@ async function renderDashboard() {
 async function renderAssets() {
   const [units, buildings] = await Promise.all([API.get('/api/units'), API.get('/api/buildings')]);
   CACHE.buildings = buildings; CACHE.units = units;
-  const statusOpts = ['', '空置', '在租', '在售', '已售', '装修中', '锁定'];
+  const statusOpts = ['', '空置', '在租', '在售', '已售', '自持', '装修中', '锁定'];
   const typeOpts = ['', '厂房', '公寓'];
   const bOpts = ['', ...buildings.map(b => b.id)];
   $('#view').innerHTML = `
