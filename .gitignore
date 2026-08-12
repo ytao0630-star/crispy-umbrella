@@ -1,0 +1,15 @@
+# ── Python 缓存 ──
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── 运行时数据库（park.db 是运行数据；空库时后端会自动重建演示数据）──
+park.db
+
+# ── 日志 ──
+*.log
+
+# ── 系统文件 ──
+.DS_Store
+.idea/
+.vscode/

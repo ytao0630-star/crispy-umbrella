@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>工业园区资产管理系统</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🏭 园区资管系统</div>
+    <div class="role-box">
+      <label>当前角色</label>
+      <select id="roleSel"></select>
+    </div>
+  </header>
+
+  <nav class="sidenav" id="sidenav">
+    <!-- 经营分析 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">📊 经营分析<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="dashboard">看板</button>
+      </div>
+    </div>
+    <!-- 招商营销 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🤝 招商营销<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="market">市场调研</button>
+        <button class="nav-item" data-view="customers">客户管理</button>
+      </div>
+    </div>
+    <!-- 资产管理 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🏢 资产管理<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="assets">资产台账</button>
+      </div>
+    </div>
+    <!-- 租赁运营 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🏠 租赁运营<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="leases">公寓管理</button>
+        <button class="nav-item" data-view="factory-rental">厂房租赁</button>
+        <button class="nav-item" data-view="contracts">合同</button>
+        <button class="nav-item" data-view="deposits">押金</button>
+      </div>
+    </div>
+    <!-- 销售运营 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🏗️ 销售运营<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="factory-sales">厂房销售</button>
+      </div>
+    </div>
+    <!-- 财务收费 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">💰 财务收费<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="billing">收费</button>
+        <button class="nav-item" data-view="meter">水电抄表</button>
+      </div>
+    </div>
+    <!-- 物业服务 -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🔧 物业服务<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="workorders">工单</button>
+      </div>
+    </div>
+    <!-- 系统设置 -->
+    <div class="nav-group">
+      <button class="nav-group-head">⚙️ 系统设置<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-sub-item" data-sys-tab="users">人员管理</button>
+        <button class="nav-sub-item" data-sys-tab="depts">部门管理</button>
+        <button class="nav-sub-item" data-sys-tab="roles">角色管理</button>
+        <button class="nav-sub-item" data-sys-tab="perms">权限配置</button>
+        <button class="nav-sub-item" data-sys-tab="menus">菜单管理</button>
+        <button class="nav-sub-item" data-sys-tab="calendar">项目日历</button>
+        <button class="nav-sub-item" data-sys-tab="rules">系统规则</button>
+        <button class="nav-sub-item" data-sys-tab="audit">审计日志</button>
+        <button class="nav-sub-item" data-sys-tab="dict">数据字典</button>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <div id="view"></div>
+  </main>
+
+  <!-- 移动端底部导航（按业务域排布，可横向滚动） -->
+  <nav class="bottomnav" id="bottomnav">
+    <button class="bnav-item active" data-view="dashboard">📊<span>看板</span></button>
+    <button class="bnav-item" data-view="market">📈<span>调研</span></button>
+    <button class="bnav-item" data-view="customers">👥<span>客户</span></button>
+    <button class="bnav-item" data-view="assets">🏢<span>资产</span></button>
+    <button class="bnav-item" data-view="leases">🏠<span>公寓</span></button>
+    <button class="bnav-item" data-view="factory-rental">🏭<span>租厂</span></button>
+    <button class="bnav-item" data-view="factory-sales">🏗️<span>售厂</span></button>
+    <button class="bnav-item" data-view="contracts">📄<span>合同</span></button>
+    <button class="bnav-item" data-view="billing">💰<span>收费</span></button>
+    <button class="bnav-item" data-view="meter">⚡<span>抄表</span></button>
+    <button class="bnav-item" data-view="deposits">🧾<span>押金</span></button>
+    <button class="bnav-item" data-view="workorders">🔧<span>工单</span></button>
+    <button class="bnav-item" data-view="system">⚙️<span>系统</span></button>
+  </nav>
+
+  <div class="modal-mask" id="modalMask">
+    <div class="modal" id="modal">
+      <div class="modal-head"><span id="modalTitle"></span><button id="modalClose">✕</button></div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js?v=20260811c"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.park.admin</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/yangtao/WorkBuddy/2026-07-30-16-09-38/park-admin-system/backend.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/yangtao/WorkBuddy/2026-07-30-16-09-38/park-admin-system</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/park_backend.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/park_backend.log</string>
+</dict>
+</plist>
