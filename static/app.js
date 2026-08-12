@@ -22,8 +22,8 @@ const CACHE = { buildings: [], customers: [], units: [], contracts: [] };
 
 const PERMS = {
   '系统管理员': 'all',
-  '招商专员': ['customers_add', 'contracts_add', 'unit_edit', 'lease_renew', 'lease_terminate', 'factory_view'],
-  '财务': ['billing_add', 'receipt_add', 'meter_add', 'deposit_add', 'factory_view'],
+  '招商专员': ['customers_add', 'contracts_add', 'unit_edit', 'lease_renew', 'lease_terminate', 'factory_view', 'merchants_add', 'merchants_edit', 'merchants_delete'],
+  '财务': ['billing_add', 'receipt_add', 'meter_add', 'deposit_add', 'factory_view', 'merchants_add', 'merchants_edit', 'merchants_delete'],
   '物业': ['workorder_add', 'workorder_edit'],
   '园区领导': ['factory_view'],
 };
@@ -96,6 +96,7 @@ function setView(v, sysTab) {
     'factory-rental': renderFactoryRental, 'factory-sales': renderFactorySales,
     customers: renderCrm, contracts: renderContracts, billing: renderBilling, meter: renderMeter,
     deposits: renderDeposits,
+    merchants: renderMerchants,
     workorders: renderWorkOrders, system: renderSystem, market: renderMarket,
   };
   if (map[v]) { $('#view').innerHTML = '<div class="empty">加载中…</div>'; map[v](); }
@@ -107,6 +108,7 @@ function refreshCurrent() {
     'factory-rental': renderFactoryRental, 'factory-sales': renderFactorySales,
     customers: renderCrm, contracts: renderContracts, billing: renderBilling, meter: renderMeter,
     deposits: renderDeposits,
+    merchants: renderMerchants,
     workorders: renderWorkOrders, system: renderSystem, market: renderMarket,
   };
   if (map[CURRENT_VIEW]) map[CURRENT_VIEW]();
@@ -242,7 +244,9 @@ async function renderLeases() {
   let filters = { category: '', floor: '', keyword: '' };
 
   $('#view').innerHTML = `
-    <div class="section-title">公寓管理 <span class="sub">房间主档 · 出租记录 · 按年视图</span></div>
+    <div class="section-title">公寓管理 <span class="sub">房间主档 · 出租记录 · 按年视图</span>
+      ${can('unit_edit') ? '<button class="btn primary" id="syncAptFees" style="float:right">⇩ 同步收费数据</button>' : ''}
+    </div>
     <div class="grid kpi-grid">
       <div class="kpi blue"><div class="label">总房间数</div><div class="value">${summary.total}</div></div>
       <div class="kpi green"><div class="label">当前在住</div><div class="value">${summary.occupied}</div></div>
@@ -256,6 +260,9 @@ async function renderLeases() {
       <button class="vtab ${aptView === 'year' ? 'active' : ''}" data-v="year">按年视图</button>
     </div>
     <div id="aptViewBody"></div>`;
+
+  const syncBtn = $('#syncAptFees');
+  if (syncBtn) syncBtn.onclick = () => syncApartmentFees();
 
   $$('#aptTabs .vtab').forEach(b => b.onclick = () => {
     aptView = b.dataset.v;
@@ -550,7 +557,7 @@ window.openRoomFeeModal = async function(roomId) {
     </table></div>
     <h4 style="margin:18px 0 10px;color:var(--muted);font-size:13px;font-weight:600">费用明细</h4>
     <div class="table-wrap"><table class="fee-table">
-      <thead><tr><th>日期</th><th>类型</th><th>金额</th><th>状态</th><th>支付方式</th><th>经办人</th><th>备注</th><th>操作</th></tr></thead>
+      <thead><tr><th>日期</th><th>类型</th><th>金额</th><th>状态</th><th>支付方式</th><th>经办人</th><th>备注</th><th>来源</th><th>操作</th></tr></thead>
       <tbody>
         ${fees.length ? fees.map(f => `
           <tr>
@@ -561,12 +568,13 @@ window.openRoomFeeModal = async function(roomId) {
             <td>${esc(f.pay_method || '-')}</td>
             <td>${esc(f.operator || '-')}</td>
             <td class="wrap">${esc(f.note || '-')}</td>
+            <td>${tag(f.source === '收费' ? '收费' : '手工')}</td>
             <td>
               <button class="btn sm ghost" onclick="editApartmentFee(${f.id}, ${roomId})">编辑</button>
               <button class="btn sm red" onclick="deleteApartmentFee(${f.id}, ${roomId})">删除</button>
             </td>
           </tr>
-        `).join('') : '<tr><td colspan="8" class="empty">暂无费用记录</td></tr>'}
+        `).join('') : '<tr><td colspan="9" class="empty">暂无费用记录</td></tr>'}
       </tbody>
     </table></div>
   `, async () => {
@@ -601,6 +609,22 @@ window.openRoomFeeModal = async function(roomId) {
       $$('.f-check').forEach(cb => cb.checked = allBox.checked);
     };
   }, 0);
+};
+
+window.syncApartmentFees = async function() {
+  if (!confirm('将把「中心收费」中所有公寓类账单同步到公寓租赁：\n· 更新各房间出租记录的缴费状态\n· 生成/刷新公寓收费台账（来源标记为「收费同步」）\n\n该操作幂等，可重复执行。确定？')) return;
+  const btn = $('#syncAptFees');
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  try {
+    const res = await API.post('/api/apartment/sync', {});
+    const n = res && res.synced_bills != null ? res.synced_bills : '—';
+    toast(`✅ 同步完成：公寓收费台账共 ${n} 笔`);
+    await renderLeases();
+  } catch (e) {
+    toast('同步失败：' + (e && e.message ? e.message : e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⇩ 同步收费数据'; }
+  }
 };
 
 window.setFeeBatch = function(preset) {
@@ -1447,6 +1471,217 @@ window.showMeterLog = function () {
   const logs = JSON.parse(localStorage.getItem('park_meter_logs') || '[]');
   const html = logs.length ? logs.map(l => `<div class="log-item"><span class="log-act">${esc(l.action)}</span> ${esc(l.detail)} <span class="log-meta">${esc(l.who)} · ${esc(l.at)}</span></div>`).join('') : '<div class="empty">暂无操作记录</div>';
   openModal('操作记录', `<div class="log-list">${html}</div>`, null);
+};
+
+// ---------- 商户管理（租户信息 / 租赁周期 / 租金方式 / 分成收入 / 收电费）----------
+const MERCHANT_CATS = ['餐饮', '零售', '办公', '制造', '服务', '仓储物流', '其他'];
+const PAY_CYCLES = ['月付', '季付', '半年付', '年付'];
+const RENT_TYPES = ['固定租金', '保底+分成', '纯分成'];
+const MERCHANT_STATUS = ['在租', '意向', '退租'];
+
+// 本期应计租金/分成（元）
+function merchantRent(m) {
+  const rev = Number(m.monthly_revenue) || 0;
+  const ratio = Number(m.split_ratio) || 0;
+  const fixed = Number(m.fixed_rent) || 0;
+  const base = Number(m.base_amount) || 0;
+  if (m.rent_type === '纯分成') return rev * ratio / 100;
+  if (m.rent_type === '保底+分成') return Math.max(base, rev * ratio / 100);
+  return fixed;
+}
+function merchantElecDue(m) { return (Number(m.electric_usage) || 0) * (Number(m.electric_price) || 0); }
+function merchantElecArrears(m) { return merchantElecDue(m) - (Number(m.electric_paid) || 0); }
+function leaseMonthsOf(m) {
+  if (!m.start_date || !m.end_date) return '-';
+  const a = new Date(m.start_date), b = new Date(m.end_date);
+  const ms = b - a;
+  if (isNaN(ms) || ms < 0) return '-';
+  return Math.round(ms / 86400000 / 30);
+}
+
+async function renderMerchants() {
+  const merchants = await API.get('/api/merchants');
+  CACHE.merchants = merchants;
+  let fStatus = '', fCat = '', fKw = '';
+  const renting = merchants.filter(m => m.status === '在租');
+  const rentSum = renting.reduce((s, m) => s + merchantRent(m), 0);
+  const elecArrears = renting.reduce((s, m) => s + Math.max(0, merchantElecArrears(m)), 0);
+  $('#view').innerHTML = `
+    <div class="section-title">商户管理 <span class="sub">租户信息 · 租赁周期 · 租金方式 · 分成收入 · 收电费</span></div>
+    <div class="grid kpi-grid">
+      <div class="kpi blue"><div class="label">商户总数</div><div class="value">${merchants.length}</div></div>
+      <div class="kpi"><div class="label">在租商户</div><div class="value">${renting.length}</div></div>
+      <div class="kpi green"><div class="label">本月应收（租金+分成）</div><div class="value">${yuan(rentSum)}</div></div>
+      <div class="kpi amber"><div class="label">电费欠缴合计</div><div class="value">${yuan(elecArrears)}</div></div>
+    </div>
+    <div class="filters">
+      <select id="mStatus"><option value="">全部状态</option>${MERCHANT_STATUS.map(s => `<option value="${s}">${s}</option>`).join('')}</select>
+      <select id="mCat"><option value="">全部业态</option>${MERCHANT_CATS.map(s => `<option value="${s}">${s}</option>`).join('')}</select>
+      <input id="mKw" placeholder="搜索编号/名称/联系人/电话">
+      ${can('merchants_add') ? '<button class="btn" id="addMerchant">+ 新增商户</button>' : ''}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>编号</th><th>名称</th><th>业态</th><th>关联资产</th><th>联系人/电话</th>
+        <th>租赁周期</th><th>缴费</th><th>租金方式</th><th>本期应收</th><th>电费欠缴</th><th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody id="merchantTable"></tbody>
+    </table></div>`;
+  function renderList() {
+    const kw = $('#mKw').value.toLowerCase();
+    const list = merchants.filter(m => {
+      if (fStatus && m.status !== fStatus) return false;
+      if (fCat && m.category !== fCat) return false;
+      if (kw && !`${m.code} ${m.name} ${m.contact} ${m.phone}`.toLowerCase().includes(kw)) return false;
+      return true;
+    });
+    $('#merchantTable').innerHTML = list.map(m => `
+      <tr>
+        <td>${esc(m.code || '-')}</td>
+        <td><b>${esc(m.name)}</b></td>
+        <td>${tag(m.category || '-')}</td>
+        <td>${m.unit_id ? esc(uname(m.unit_id)) : '-'}</td>
+        <td>${esc(m.contact || '-')}<br><span class="mut">${esc(m.phone || '-')}</span></td>
+        <td>${esc(m.start_date || '-')} ~ ${esc(m.end_date || '-')}<br><span class="mut">${leaseMonthsOf(m)} 个月</span></td>
+        <td>${esc(m.pay_cycle || '-')}</td>
+        <td>${tag(m.rent_type || '-')}</td>
+        <td>${yuan(merchantRent(m))}</td>
+        <td>${merchantElecArrears(m) > 0 ? `<span style="color:#e0531f">${yuan(merchantElecArrears(m))}</span>` : yuan(0)}</td>
+        <td>${tag(m.status || '-')}</td>
+        <td>
+          <button class="btn sm ghost" onclick="openMerchantDetail(${m.id})">详情</button>
+          ${can('merchants_edit') ? `<button class="btn sm ghost" onclick="openMerchantModal(${m.id})">编辑</button>` : ''}
+          ${can('merchants_delete') ? `<button class="btn sm danger" onclick="deleteMerchant(${m.id})">删除</button>` : ''}
+        </td>
+      </tr>`).join('') || '<tr><td colspan="12" class="empty">无记录</td></tr>';
+  }
+  $('#mStatus').onchange = () => { fStatus = $('#mStatus').value; renderList(); };
+  $('#mCat').onchange = () => { fCat = $('#mCat').value; renderList(); };
+  $('#mKw').oninput = renderList;
+  renderList();
+  if (can('merchants_add')) $('#addMerchant').onclick = () => openMerchantModal();
+}
+
+window.openMerchantModal = function(id) {
+  const isEdit = !!id;
+  const m = isEdit ? (CACHE.merchants || []).find(x => x.id == id) : {};
+  const custOpts = (CACHE.customers || []).map(c => `<option value="${c.id}" ${String(m.customer_id) === String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const unitOpts = (CACHE.units || []).map(u => `<option value="${u.id}" ${String(m.unit_id) === String(u.id) ? 'selected' : ''}>${esc(u.code)}</option>`).join('');
+  const split = (t) => `<div style="grid-column:1/3;font-weight:600;color:var(--accent);margin:10px 0 2px;font-size:13px">${t}</div>`;
+  openModal(isEdit ? '编辑商户' : '新增商户', `
+    <div class="form-grid">
+      <div class="form-row"><label>商户编号</label><input id="f_code" value="${esc(m.code || '')}" placeholder="如 M001"></div>
+      <div class="form-row"><label>商户名称</label><input id="f_name" value="${esc(m.name || '')}"></div>
+      <div class="form-row"><label>关联客户</label><select id="f_customer_id"><option value="">未关联</option>${custOpts}</select></div>
+      <div class="form-row"><label>关联资产单元</label><select id="f_unit_id"><option value="">未关联</option>${unitOpts}</select></div>
+      <div class="form-row"><label>经营业态</label><select id="f_category">${sel(MERCHANT_CATS, m.category)}</select></div>
+      <div class="form-row"><label>状态</label><select id="f_status">${sel(MERCHANT_STATUS, m.status || '在租')}</select></div>
+      <div class="form-row"><label>联系人</label><input id="f_contact" value="${esc(m.contact || '')}"></div>
+      <div class="form-row"><label>电话</label><input id="f_phone" value="${esc(m.phone || '')}"></div>
+      <div class="form-row"><label>入场日期</label><input id="f_enter_date" type="date" value="${esc(m.enter_date || '')}"></div>
+      <div class="form-row"><label></label><span class="mut"></span></div>
+      ${split('租赁周期')}
+      <div class="form-row"><label>起租日</label><input id="f_start_date" type="date" value="${esc(m.start_date || '')}"></div>
+      <div class="form-row"><label>到期日</label><input id="f_end_date" type="date" value="${esc(m.end_date || '')}"></div>
+      <div class="form-row"><label>缴费周期</label><select id="f_pay_cycle">${sel(PAY_CYCLES, m.pay_cycle || '月付')}</select></div>
+      <div class="form-row"><label></label><span class="mut"></span></div>
+      ${split('租金方式')}
+      <div class="form-row"><label>租金方式</label><select id="f_rent_type">${sel(RENT_TYPES, m.rent_type || '固定租金')}</select></div>
+      <div class="form-row"><label>月固定租金</label><input id="f_fixed_rent" type="number" value="${m.fixed_rent || ''}"></div>
+      <div class="form-row"><label>保底额</label><input id="f_base_amount" type="number" value="${m.base_amount || ''}"></div>
+      <div class="form-row"><label>分成比例%</label><input id="f_split_ratio" type="number" value="${m.split_ratio || ''}"></div>
+      <div class="form-row"><label>物业费/月</label><input id="f_property_fee" type="number" value="${m.property_fee || ''}"></div>
+      <div class="form-row"><label>本月营业额</label><input id="f_monthly_revenue" type="number" value="${m.monthly_revenue || ''}"></div>
+      <div class="form-row"><label></label><span class="mut"></span></div>
+      ${split('收电费')}
+      <div class="form-row"><label>电表号</label><input id="f_electric_meter_no" value="${esc(m.electric_meter_no || '')}"></div>
+      <div class="form-row"><label>电价(元/度)</label><input id="f_electric_price" type="number" step="0.01" value="${m.electric_price || ''}"></div>
+      <div class="form-row"><label>本月用电量(度)</label><input id="f_electric_usage" type="number" value="${m.electric_usage || ''}"></div>
+      <div class="form-row"><label>已缴电费</label><input id="f_electric_paid" type="number" value="${m.electric_paid || ''}"></div>
+      <div class="form-row" style="grid-column:1/3"><label>备注</label><input id="f_note" value="${esc(m.note || '')}"></div>
+    </div>`, async () => {
+    const body = {
+      code: $('#f_code').value.trim(),
+      name: $('#f_name').value.trim(),
+      customer_id: $('#f_customer_id').value ? +$('#f_customer_id').value : null,
+      unit_id: $('#f_unit_id').value ? +$('#f_unit_id').value : null,
+      category: $('#f_category').value,
+      status: $('#f_status').value,
+      contact: $('#f_contact').value.trim(),
+      phone: $('#f_phone').value.trim(),
+      enter_date: $('#f_enter_date').value || null,
+      start_date: $('#f_start_date').value || null,
+      end_date: $('#f_end_date').value || null,
+      pay_cycle: $('#f_pay_cycle').value,
+      rent_type: $('#f_rent_type').value,
+      fixed_rent: +$('#f_fixed_rent').value || 0,
+      base_amount: +$('#f_base_amount').value || 0,
+      split_ratio: +$('#f_split_ratio').value || 0,
+      property_fee: +$('#f_property_fee').value || 0,
+      monthly_revenue: +$('#f_monthly_revenue').value || 0,
+      electric_meter_no: $('#f_electric_meter_no').value.trim(),
+      electric_price: +$('#f_electric_price').value || 0,
+      electric_usage: +$('#f_electric_usage').value || 0,
+      electric_paid: +$('#f_electric_paid').value || 0,
+      note: $('#f_note').value.trim(),
+    };
+    if (isEdit) await API.put('/api/merchants/' + id, body);
+    else await API.post('/api/merchants', body);
+    closeModal(); toast(isEdit ? '商户已更新' : '商户已添加'); renderMerchants();
+  });
+};
+
+window.openMerchantDetail = function(id) {
+  const m = (CACHE.merchants || []).find(x => x.id == id);
+  if (!m) return;
+  const rent = merchantRent(m);
+  const due = merchantElecDue(m);
+  const arrears = merchantElecArrears(m);
+  openModal('商户详情：' + m.name, `
+    <div class="crm-detail">
+      <div class="kv"><span>商户编号</span><b>${esc(m.code || '-')}</b></div>
+      <div class="kv"><span>状态</span><b>${tag(m.status || '-')}</b></div>
+      <div class="kv"><span>经营业态</span><b>${esc(m.category || '-')}</b></div>
+      <div class="kv"><span>关联客户</span><b>${m.customer_id ? esc(cname(m.customer_id)) : '-'}</b></div>
+      <div class="kv"><span>关联资产</span><b>${m.unit_id ? esc(uname(m.unit_id)) : '-'}</b></div>
+      <div class="kv"><span>联系人</span><b>${esc(m.contact || '-')}</b></div>
+      <div class="kv"><span>电话</span><b>${esc(m.phone || '-')}</b></div>
+      <div class="kv"><span>入场日期</span><b>${esc(m.enter_date || '-')}</b></div>
+    </div>
+    <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:10px"><b>租赁周期</b></div>
+    <div class="crm-detail">
+      <div class="kv"><span>起租日</span><b>${esc(m.start_date || '-')}</b></div>
+      <div class="kv"><span>到期日</span><b>${esc(m.end_date || '-')}</b></div>
+      <div class="kv"><span>租期(约)</span><b>${leaseMonthsOf(m)} 个月</b></div>
+      <div class="kv"><span>缴费周期</span><b>${esc(m.pay_cycle || '-')}</b></div>
+    </div>
+    <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:10px"><b>租金方式 / 分成收入</b></div>
+    <div class="crm-detail">
+      <div class="kv"><span>租金方式</span><b>${tag(m.rent_type || '-')}</b></div>
+      <div class="kv"><span>月固定租金</span><b>${yuan(m.fixed_rent || 0)}</b></div>
+      <div class="kv"><span>保底额</span><b>${yuan(m.base_amount || 0)}</b></div>
+      <div class="kv"><span>分成比例</span><b>${m.split_ratio || 0}%</b></div>
+      <div class="kv"><span>本月营业额</span><b>${yuan(m.monthly_revenue || 0)}</b></div>
+      <div class="kv"><span>物业费/月</span><b>${yuan(m.property_fee || 0)}</b></div>
+      <div class="kv"><span>本期应收(租金+分成)</span><b style="color:#0a7d3b">${yuan(rent)}</b></div>
+    </div>
+    <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:10px"><b>收电费</b></div>
+    <div class="crm-detail">
+      <div class="kv"><span>电表号</span><b>${esc(m.electric_meter_no || '-')}</b></div>
+      <div class="kv"><span>电价</span><b>${yuan(m.electric_price || 0)}/度</b></div>
+      <div class="kv"><span>本月用电量</span><b>${fmt(m.electric_usage || 0)} 度</b></div>
+      <div class="kv"><span>应缴电费</span><b>${yuan(due)}</b></div>
+      <div class="kv"><span>已缴电费</span><b>${yuan(m.electric_paid || 0)}</b></div>
+      <div class="kv"><span>电费欠缴</span><b style="color:${arrears > 0 ? '#e0531f' : '#0a7d3b'}">${yuan(arrears)}</b></div>
+    </div>
+    ${m.note ? `<div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:10px"><b>备注</b><div class="mut" style="margin-top:6px">${esc(m.note)}</div></div>` : ''}
+  `, null);
+};
+
+window.deleteMerchant = async function(id) {
+  if (!confirm('确认删除该商户记录？此操作不可撤销。')) return;
+  await API.delete('/api/merchants/' + id);
+  toast('已删除'); renderMerchants();
 };
 
 // ---------- 押金 ----------

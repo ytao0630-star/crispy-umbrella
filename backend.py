@@ -250,7 +250,11 @@ def init_db():
     _ensure_apartment_fees(conn)
     _ensure_apartment_seed(conn)
     _migrate_apartment_model(conn)
+    _ensure_apartment_sync_columns(conn)
+    _migrate_apartment_contracts(conn)
     _ensure_meter_records(conn)
+    _ensure_merchants(conn)
+    _ensure_merchants_seed(conn)
     # 若为空则灌入演示数据
     cnt = c.execute("SELECT COUNT(*) AS n FROM buildings").fetchone()["n"]
     if cnt == 0:
@@ -552,6 +556,86 @@ def _migrate_apartment_model(conn):
     conn.commit()
 
 
+def _ensure_apartment_sync_columns(conn):
+    """收费→公寓租赁同步所需的字段（幂等）。"""
+    c = conn.cursor()
+    for sql in (
+        "ALTER TABLE apartment_rentals ADD COLUMN contract_id INTEGER",
+        "ALTER TABLE apartment_fees ADD COLUMN source TEXT DEFAULT '手工'",
+        "ALTER TABLE apartment_fees ADD COLUMN bill_id INTEGER",
+        "ALTER TABLE apartment_rooms ADD COLUMN unit_id INTEGER",
+    ):
+        try:
+            c.execute(sql)
+        except Exception:
+            pass
+    conn.commit()
+
+
+def _migrate_apartment_contracts(conn):
+    """方案A：每个在住房间 = 1 个租赁合同，与 apartment_rentals 1:1 关联。
+
+    房间已通过导入/种子关联到资产单元(units)，此处为每间房建/复用房间级租赁合同
+    （code=HT-AP-<单元号>），并把 apartment_rentals.contract_id 指向它，
+    作为「中心收费 → 公寓租赁」同步的关联键。幂等、可重复执行。
+    """
+    c = conn.cursor()
+    ts = now()
+    # 1) 清理历史遗留的坏合同（code 后缀为空，如 'HT-AP-'）
+    bad = c.execute("SELECT id, code FROM contracts WHERE code LIKE 'HT-AP-%'").fetchall()
+    bad_ids = [r["id"] for r in bad if (r["code"] or "").rstrip("-").strip() in ("HT-AP", "")]
+    if bad_ids:
+        c.executemany("UPDATE apartment_rentals SET contract_id=NULL WHERE contract_id=?",
+                      [(i,) for i in bad_ids])
+        c.executemany("DELETE FROM bills WHERE contract_id=?", [(i,) for i in bad_ids])
+        c.executemany("DELETE FROM contracts WHERE id=?", [(i,) for i in bad_ids])
+        conn.commit()
+
+    # 2) 逐间房建/复用合同（room_no/unit 经 JOIN 取得，不再依赖 apartment_rentals 上的列）
+    rows = c.execute(
+        "SELECT r.id AS rid, r.contract_id, r.company_name, r.occupant_name, "
+        "ar.room_no, ar.unit_id, u.code AS unit_code, u.building_id "
+        "FROM apartment_rentals r "
+        "LEFT JOIN apartment_rooms ar ON ar.id=r.room_id "
+        "LEFT JOIN units u ON u.id=ar.unit_id").fetchall()
+    for r in rows:
+        r = dict(r)
+        if r.get("contract_id") is not None:
+            continue
+        unit_id = r.get("unit_id")
+        if not unit_id:
+            continue
+        room_no = (r.get("room_no") or "").strip()
+        unit_code = (r.get("unit_code") or "").strip()
+        # 租客名称：公司优先，其次入住人，再兜底
+        tenant = (r.get("company_name") or "").strip() or (r.get("occupant_name") or "").strip()
+        if not tenant:
+            tenant = f"住户-{unit_code or room_no}"
+        # 客户
+        cust = c.execute("SELECT * FROM customers WHERE name=?", (tenant,)).fetchone()
+        if not cust:
+            ctype = "企业" if any(k in tenant for k in ("公司", "科技", "物流", "集团", "厂", "企业", "有限")) else "个人"
+            c.execute("INSERT INTO customers (type,name,contact,phone,address) VALUES (?,?,?,?,?)",
+                      (ctype, tenant, "", "", "园区公寓"))
+            cust_id = c.lastrowid
+        else:
+            cust_id = cust["id"]
+        # 复用该房间单元已有的 HT-AP 合同，否则新建（挂在房间已有单元上，不新建重复单元）
+        code = f"HT-AP-{unit_code or room_no}"
+        ex = c.execute("SELECT * FROM contracts WHERE code=? AND unit_id=?", (code, unit_id)).fetchone()
+        if ex:
+            contract_id = ex["id"]
+        else:
+            c.execute(
+                "INSERT INTO contracts (code,type,unit_id,customer_id,start_date,end_date,amount,pay_cycle,deposit,status,sign_date,note,lease_months,free_days,deposit_status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (code, "租赁", unit_id, cust_id, ts[:10], "", 0, "月", 0, "生效",
+                 ts[:10], "公寓房间租赁(房间级同步)", 12, 0, "不涉及"))
+            contract_id = c.lastrowid
+        c.execute("UPDATE apartment_rentals SET contract_id=? WHERE id=?", (contract_id, r["rid"]))
+    conn.commit()
+
+
 def _ensure_meter_records(conn):
     """综合水电抄表台账（一行水+电，对应《水电抄表管理》页面）。幂等：表已存在时仅在建表并空表时灌示例。"""
     c = conn.cursor()
@@ -601,6 +685,73 @@ def _calc_stay_days(check_in, check_out):
         return max(0, (d2 - d1).days)
     except Exception:
         return None
+
+
+def _ensure_merchants(conn):
+    """商户管理主表：租户信息 / 租赁周期 / 租金方式 / 分成 / 电费。"""
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS merchants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT,
+        name TEXT,
+        customer_id INTEGER,
+        unit_id INTEGER,
+        category TEXT,
+        contact TEXT,
+        phone TEXT,
+        enter_date TEXT,
+        status TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        pay_cycle TEXT,
+        rent_type TEXT,
+        fixed_rent REAL,
+        base_amount REAL,
+        split_ratio REAL,
+        property_fee REAL,
+        monthly_revenue REAL,
+        electric_meter_no TEXT,
+        electric_price REAL,
+        electric_usage REAL,
+        electric_paid REAL,
+        note TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    conn.commit()
+
+
+def _ensure_merchants_seed(conn):
+    """商户管理演示数据：仅在表为空时灌入（兼容已有库也能看到示例）。"""
+    cnt = conn.execute("SELECT COUNT(*) AS n FROM merchants").fetchone()["n"]
+    if cnt > 0:
+        return
+    demo = [
+        ("M001", "星耀餐饮", None, None, "餐饮", "张明", "13800001111", "2024-03-01", "在租",
+         "2024-03-01", "2026-02-28", "月付", "保底+分成", 8000, 6000, 8, 1500, 120000,
+         "D-102", 0.85, 3200, 2400, "B区一层临街铺位"),
+        ("M002", "云仓零售", None, None, "零售", "李华", "13900002222", "2023-09-15", "在租",
+         "2023-09-15", "2025-09-14", "季付", "固定租金", 12000, 0, 0, 2000, 0,
+         "D-205", 0.85, 1800, 1800, "A区二层标准铺位"),
+        ("M003", "智造工坊", None, None, "制造", "王强", "13700003333", "2025-01-10", "在租",
+         "2025-01-10", "2027-01-09", "月付", "纯分成", 0, 0, 5, 0, 300000,
+         "E-310", 0.80, 5400, 3000, "厂房区三层"),
+        ("M004", "优选便利", None, None, "零售", "赵敏", "13600004444", "2024-06-01", "退租",
+         "2024-06-01", "2025-05-31", "月付", "固定租金", 6000, 0, 0, 1000, 0,
+         "D-118", 0.85, 0, 0, "已退租结清"),
+    ]
+    ts = now()
+    for d in demo:
+        conn.execute(
+            "INSERT INTO merchants "
+            "(code,name,customer_id,unit_id,category,contact,phone,enter_date,status,"
+            "start_date,end_date,pay_cycle,rent_type,fixed_rent,base_amount,split_ratio,"
+            "property_fee,monthly_revenue,electric_meter_no,electric_price,electric_usage,"
+            "electric_paid,note,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            d + (ts, ts))
+    conn.commit()
 
 
 def seed_demo(conn):
@@ -832,6 +983,70 @@ def recompute_bill_status(bill_id, conn):
     conn.commit()
 
 
+def sync_bill_to_apartment(conn, bill_id):
+    """收费账单变动后，同步到对应公寓出租记录：更新缴费状态 + 生成公寓收费台账。
+    幂等：同一 bill_id 的公寓费用记录先删后插。"""
+    c = conn.cursor()
+    b = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+    if not b:
+        return
+    # 定位资产单元类型（优先 unit_id，其次经 contract 反查）
+    unit = None
+    if b["unit_id"]:
+        unit = c.execute("SELECT * FROM units WHERE id=?", (b["unit_id"],)).fetchone()
+    if not unit and b["contract_id"]:
+        ct = c.execute("SELECT * FROM contracts WHERE id=?", (b["contract_id"],)).fetchone()
+        if ct:
+            unit = c.execute("SELECT * FROM units WHERE id=?", (ct["unit_id"],)).fetchone()
+    if not unit or unit["type"] != "公寓":
+        return
+    # 找关联出租记录（按合同）
+    rentals = []
+    if b["contract_id"]:
+        rentals = c.execute("SELECT * FROM apartment_rentals WHERE contract_id=?",
+                            (b["contract_id"],)).fetchall()
+    if not rentals:
+        return
+    paid = b["paid_amount"] or 0
+    amt = b["amount"] or 0
+    if paid >= amt and amt > 0:
+        pstat = "已缴"
+    elif paid > 0:
+        pstat = "部分"
+    elif b["status"] == "欠费":
+        pstat = "欠费"
+    else:
+        pstat = "待缴"
+    # 账单状态 -> 公寓费用台账状态
+    fee_status = {"已收": "已收", "部分": "已收", "欠费": "待收", "待收": "待收"}.get(b["status"], "待收")
+    for r in rentals:
+        c.execute("UPDATE apartment_rentals SET payment_status=?, updated_at=? WHERE id=?",
+                  (pstat, now(), r["id"]))
+        c.execute("DELETE FROM apartment_fees WHERE bill_id=?", (bill_id,))
+        c.execute(
+            "INSERT INTO apartment_fees (room_id,rental_id,fee_type,amount,fee_date,pay_method,status,operator,note,source,bill_id,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (r["room_id"], r["id"], b["item_type"], amt, b["due_date"] or (b["created_at"] or now())[:10],
+             "", fee_status, "", "中心收费同步", "收费", bill_id, now(), now()))
+    conn.commit()
+
+
+def sync_all_apartment_bills(conn):
+    """全量同步：遍历所有公寓类账单，重建公寓收费台账与缴费状态。返回统计。"""
+    c = conn.cursor()
+    bills = c.execute(
+        "SELECT b.* FROM bills b JOIN units u ON b.unit_id=u.id WHERE u.type='公寓'").fetchall()
+    for b in bills:
+        sync_bill_to_apartment(conn, b["id"])
+    bills2 = c.execute(
+        "SELECT b.* FROM bills b JOIN contracts ct ON b.contract_id=ct.id "
+        "JOIN units u ON ct.unit_id=u.id WHERE u.type='公寓' AND b.unit_id IS NULL").fetchall()
+    for b in bills2:
+        sync_bill_to_apartment(conn, b["id"])
+    n = c.execute("SELECT COUNT(*) AS n FROM apartment_fees WHERE source='收费'").fetchone()["n"]
+    return {"synced_bills": n}
+
+
 def generate_monthly_bills(month):
     """为所有生效中的租赁合同生成本月账单：厂房=租金+物业费，公寓=租金（水电按表单独出）。已存在则跳过。"""
     conn = get_db()
@@ -973,6 +1188,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_apartment_fees_summary(room_id=q("room_id"), rental_id=q("rental_id")))
         if path == "/api/deposits":
             return self._send_json(self.api_deposits())
+        # 商户管理
+        if path == "/api/merchants":
+            return self._send_json(self.api_list("merchants"))
         # 系统管理
         if path == "/api/users":
             return self._send_json(self.api_users())
@@ -1030,7 +1248,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/bills/generate":
             month = body.get("month") or today()[:7]
             n = generate_monthly_bills(month)
-            return self._send_json({"created": n, "month": month})
+            conn = self._db()
+            sync_all_apartment_bills(conn)
+            conn.close()
+            return self._send_json({"created": n, "month": month, "apartment_synced": True})
         if path == "/api/bills":
             return self._send_json(self.api_insert("bills", body), 201)
         if path == "/api/meter-readings":
@@ -1053,6 +1274,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_terminate_contract(cid, body))
         if path == "/api/deposits":
             return self._send_json(self.api_insert("deposits", body), 201)
+        # 商户管理
+        if path == "/api/merchants":
+            body = dict(body)
+            body["created_at"] = now()
+            body["updated_at"] = now()
+            return self._send_json(self.api_insert("merchants", body), 201)
         if path == "/api/apartment-records":
             return self._send_json(self.api_insert_apartment(body), 201)
         # 房间主档 + 出租记录
@@ -1064,6 +1291,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_insert_apartment_fee(body), 201)
         if path == "/api/apartment-fees/batch":
             return self._send_json(self.api_create_apartment_fees_batch(body), 201)
+        if path == "/api/apartment/sync":
+            conn = self._db()
+            res = sync_all_apartment_bills(conn)
+            conn.close()
+            return self._send_json({"ok": True, **res})
         # 系统管理
         if path == "/api/users":
             return self._send_json(self.api_insert("users", body), 201)
@@ -1135,6 +1367,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/meter-records/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_save_meter_record(body, rid))
+        # 商户管理
+        if path.startswith("/api/merchants/"):
+            rid = path.split("/")[-1]
+            body = dict(body)
+            body["updated_at"] = now()
+            return self._send_json(self.api_update("merchants", rid, body))
         if path.startswith("/api/bills/") and path.endswith("/receipt"):
             bid = path.split("/")[-2]
             return self._send_json(self.api_receipt(bid, body))
@@ -1180,6 +1418,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/channels/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_delete("channels", rid))
+        # 商户管理
+        if path.startswith("/api/merchants/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_delete("merchants", rid))
         if path.startswith("/api/crm-plans/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_delete("crm_plans", rid))
@@ -1600,6 +1842,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         c.execute("UPDATE bills SET paid_amount=? WHERE id=?", (new_paid, bill_id))
         conn.commit()
         recompute_bill_status(bill_id, conn)
+        sync_bill_to_apartment(conn, bill_id)
         row = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
         conn.close()
         return row
