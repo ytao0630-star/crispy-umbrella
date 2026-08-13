@@ -1269,7 +1269,7 @@ async function renderContracts() {
       <select id="fStatus">${dictOpts('contract_status', { empty: true }).map(o => `<option value="${o}">${o || '全部状态'}</option>`).join('')}</select>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>合同号</th><th>类型</th><th>单元</th><th>客户</th><th>起止日期</th><th>金额</th><th>付款周期</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>合同号</th><th>类型</th><th>单元</th><th>客户</th><th>起止日期</th><th>金额</th><th>付款周期</th><th>状态</th><th>经办人</th><th>操作</th></tr></thead>
       <tbody id="contractTable"></tbody>
     </table></div>`;
   function renderList() {
@@ -1300,12 +1300,16 @@ window.openContractModal = async function(unitId, type) {
       <div class="form-row"><label>结束日</label><input id="f_ed" type="date" value="${type === '租赁' ? '' : today()}"></div>
       <div class="form-row"><label>押金</label><input id="f_dep" type="number" value="0"></div>
       <div class="form-row"><label>免租期(天)</label><input id="f_free" type="number" min="0" value="0" placeholder="协商约数，如 60"></div>
+      <div class="form-row"><label>经办人</label><input id="f_manager" placeholder="合同经办人"></div>
+      <div class="form-row"><label>租金递增</label><input id="f_escalation" placeholder="如：每年递增5%"></div>
+      <div class="form-row"><label>付款分期</label><input id="f_installment" placeholder="如：分3期，每季度付"></div>
     </div>`, async () => {
     await API.post('/api/contracts', {
       code: $('#f_code').value, type, unit_id: unitId,
       customer_id: +$('#f_cust').value, amount: +$('#f_amt').value || 0, pay_cycle: $('#f_cycle').value,
       start_date: $('#f_sd').value, end_date: $('#f_ed').value, deposit: +$('#f_dep').value || 0,
       free_days: +$('#f_free').value || 0,
+      manager: $('#f_manager').value, escalation: $('#f_escalation').value, installment: $('#f_installment').value,
       status: type === '租赁' ? '生效' : '已售', sign_date: today(), note: type,
     });
     closeModal(); toast('合同已创建'); refreshCurrent();
@@ -1945,7 +1949,7 @@ async function renderWorkOrders() {
       ${can('workorder_add') ? '<button class="btn" id="addWo">+ 新增工单</button>' : ''}
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>工单号</th><th>类型</th><th>关联单元</th><th>优先级</th><th>报修人</th><th>描述</th><th>处理人</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>工单号</th><th>类型</th><th>关联单元</th><th>优先级</th><th>报修人</th><th>描述</th><th>处理人</th><th>状态</th><th>创建时间</th><th>截止/SLA</th><th>操作</th></tr></thead>
       <tbody id="woTable"></tbody>
     </table></div>`;
   function renderList() {
@@ -1953,9 +1957,9 @@ async function renderWorkOrders() {
     let list = rows.filter(r => !st || r.status === st);
     $('#woTable').innerHTML = list.map(r => `
       <tr>
-        <td>${esc(r.code)}</td><td>${esc(r.type)}</td><td>${r.unit_code ? esc(r.unit_code) : '-'}</td><td>${tag(r.priority || '普通')}</td><td>${esc(r.reporter)}</td><td>${esc(r.description)}</td><td>${esc(r.assignee || '-')}</td><td>${tag(r.status)}</td><td>${esc(r.created_at)}</td>
+        <td>${esc(r.code)}</td><td>${esc(r.type)}</td><td>${r.unit_code ? esc(r.unit_code) : '-'}</td><td>${tag(r.priority || '普通')}</td><td>${esc(r.reporter)}</td><td>${esc(r.description)}</td><td>${esc(r.assignee || '-')}</td><td>${tag(r.status)}</td><td>${esc(r.created_at)}</td><td>${r.due_at ? esc(r.due_at) + (r.status !== '已完成' && r.due_at < today() ? ' <span class="tag t-red">超期</span>' : '') : '-'}</td>
         <td>${can('workorder_edit') && r.status !== '已完成' ? `<button class="btn sm ghost" onclick="assignWorkOrder(${r.id})">派工</button>` : '-'}</td>
-      </tr>`).join('') || '<tr><td colspan="10" class="empty">无记录</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="11" class="empty">无记录</td></tr>';
   }
   $('#fStatus').onchange = renderList;
   renderList();
@@ -1974,11 +1978,12 @@ window.openWorkOrderModal = function(r = {}) {
       <div class="form-row"><label>处理人</label><input id="f_assignee" value="${esc(r.assignee || '')}"></div>
       <div class="form-row" style="grid-column:1/3"><label>描述</label><input id="f_desc" value="${esc(r.description || '')}"></div>
       <div class="form-row"><label>状态</label><select id="f_status">${sel(dictOpts('workorder_status'), r.status || '待派')}</select></div>
+      <div class="form-row"><label>截止时间</label><input id="f_due_at" type="date" value="${esc(r.due_at || '')}"></div>
     </div>`, async () => {
     const body = {
       code: $('#f_code').value, type: $('#f_type').value, reporter: $('#f_reporter').value,
       assignee: $('#f_assignee').value, description: $('#f_desc').value, status: $('#f_status').value,
-      priority: $('#f_priority').value, unit_id: $('#f_unit_id').value ? +$('#f_unit_id').value : null
+      priority: $('#f_priority').value, unit_id: $('#f_unit_id').value ? +$('#f_unit_id').value : null, due_at: $('#f_due_at').value || null
     };
     if (isEdit) await API.put('/api/work-orders/' + r.id, body);
     else await API.post('/api/work-orders', body);

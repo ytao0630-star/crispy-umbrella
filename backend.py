@@ -261,6 +261,7 @@ def init_db():
     _ensure_merchants_seed(conn)
     _ensure_deposit_columns(conn)
     _ensure_workorder_columns(conn)
+    _ensure_contract_columns(conn)
     _derive_merchants(conn)
     # 若为空则灌入演示数据
     cnt = c.execute("SELECT COUNT(*) AS n FROM buildings").fetchone()["n"]
@@ -794,6 +795,18 @@ def _ensure_workorder_columns(conn):
         if col not in cols:
             try:
                 conn.execute(f"ALTER TABLE work_orders ADD COLUMN {col} {ddl}")
+                conn.commit()
+            except Exception:
+                pass
+
+
+def _ensure_contract_columns(conn):
+    """合同表补充 manager(经办人) / escalation(租金递增条款) / installment(付款分期) 字段，打通合同精细化管控。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(contracts)").fetchall()}
+    for col, ddl in [("manager", "TEXT"), ("escalation", "TEXT"), ("installment", "TEXT")]:
+        if col not in cols:
+            try:
+                conn.execute(f"ALTER TABLE contracts ADD COLUMN {col} {ddl}")
                 conn.commit()
             except Exception:
                 pass
