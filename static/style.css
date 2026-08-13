@@ -199,6 +199,12 @@ td.wrap, th.wrap { white-space: normal; }
 .crm-detail .kv span { color: var(--muted); font-size: 13px; }
 .crm-detail .kv b { font-weight: 600; text-align: right; }
 .follow-item { background: #f7f9fc; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.sub-block { margin: 12px 0; padding: 10px 12px; background: #f7f9fc; border: 1px solid var(--line); border-radius: 8px; }
+.sub-block > b { display: block; margin-bottom: 8px; font-size: 13px; color: var(--ink); }
+.sub-block .mut { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+table.mini { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.mini th, table.mini td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+table.mini th { background: #eef2f8; color: var(--muted); font-weight: 600; }
 .follow-head { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .follow-head b { color: var(--primary); }
 .follow-body { font-size: 14px; line-height: 1.5; }

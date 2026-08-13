@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>园区资管系统 · P1 改动与验证清单</title>
+<style>
+  :root{--bg:#f4f6f9;--panel:#fff;--ink:#1f2d3d;--muted:#7a8794;--line:#e5e9f0;--primary:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;padding:28px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:6px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .panel h2{font-size:16px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600}
+  .t-done{background:#e7f6ec;color:var(--green)}
+  .t-pend{background:#fdeede;color:var(--amber)}
+  .t-bug{background:#fdeaea;color:var(--red)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f8;color:var(--muted);font-weight:600}
+  code{background:#eef2f8;padding:1px 6px;border-radius:4px;font-size:12px}
+  ul{margin:8px 0 0 18px}li{margin:4px 0}
+  .note{background:#fff8e6;border:1px solid #f4e0a3;border-radius:8px;padding:12px 14px;font-size:13px;margin:10px 0}
+  .kv{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>园区资管系统 · P1 关联与逻辑完善</h1>
+  <div class="sub">GM/测试经理视角 · 修复"关联断点 + 签约自动收押" · 代码改动已完成，自动化验证因 Bash 工具临时故障待重启后补跑</div>
+
+  <div class="panel">
+    <h2>改动总览</h2>
+    <table>
+      <thead><tr><th>编号</th><th>项目</th><th>类型</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>P1-1</td><td>客户详情下钻（合同/资产/应收/公寓收费）</td><td>关联断点</td><td><span class="tag t-done">代码完成</span></td></tr>
+        <tr><td>P1-2</td><td>工单关联单元 + 优先级</td><td>关联断点 + 表单增强</td><td><span class="tag t-done">代码完成</span></td></tr>
+        <tr><td>P1-3</td><td>商户从合同自动派生关联</td><td>关联断点</td><td><span class="tag t-done">代码完成</span></td></tr>
+        <tr><td>P1-4</td><td>签约自动收押 + 押金状态列</td><td>逻辑完整性</td><td><span class="tag t-done">代码完成</span></td></tr>
+      </tbody>
+    </table>
+    <div class="note"><b>说明：</b>本会话 Bash 工具持续返回校验错误（"Parameter command expected string"），导致无法重启后端、运行验证脚本与 git 提交。代码改动已通过 Edit 写入磁盘，<b>需重启后端后做一次冒烟验证</b>（见下方清单）。重启与提交将在 Bash 恢复后立即执行。</div>
+  </div>
+
+  <div class="panel">
+    <h2>P1-1 客户详情下钻 <span class="tag t-done">代码完成</span></h2>
+    <p class="kv">消除"客户 → 合同 → 资产 → 应收"关联断点，总经理可在客户详情一眼看到该客户的全貌。</p>
+    <ul>
+      <li><b>后端</b>：新增 <code>GET /api/customers/&lt;id&gt;/detail</code>，聚合：名下合同、名下资产单元（按 <code>units.current_customer_id</code>）、应收账单（按 <code>bills.customer_id</code>）、公寓收费（通过单元归属反查 <code>apartment_fees</code>），并给出应收/已收汇总。</li>
+      <li><b>前端</b>：客户列表"详情"弹窗新增四个子区块：关联合同、名下资产单元、应收账单（显示应收/已收）、公寓收费。</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h2>P1-2 工单关联单元 + 优先级 <span class="tag t-done">代码完成</span></h2>
+    <p class="kv">原工单表单无法选单元、列表不显示单元（审计列为"最简表单"）。</p>
+    <ul>
+      <li><b>后端</b>：<code>api_work_orders</code> 改为 <code>LEFT JOIN units</code>，返回 <code>unit_code</code>；迁移 <code>_ensure_workorder_columns</code> 给 work_orders 增加 <code>priority / due_at / customer_id</code> 列。</li>
+      <li><b>前端</b>：工单列表新增"关联单元""优先级"两列；新增/派工弹窗增加"关联单元"下拉与"优先级"下拉（普通/紧急/特急）。</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h2>P1-3 商户从合同自动派生关联 <span class="tag t-done">代码完成</span></h2>
+    <p class="kv">原 4 条商户 unit_id/customer_id 全空，是数据孤岛。</p>
+    <ul>
+      <li><b>后端</b>：迁移 <code>_derive_merchants</code>（init_db 调用，幂等）：① 按名称把现有演示商户关联到客户并补齐关联单元；② 从所有"生效/已售"的租赁、销售合同派生真实商户（customer_id + unit_id 关联）。</li>
+      <li>效果：商户管理页"关联资产"列将不再全为 <code>-</code>；后续真实合同导入后自动补全。</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h2>P1-4 签约自动收押 + 押金状态列 <span class="tag t-done">代码完成</span></h2>
+    <p class="kv">原押金只能手工登记，签约无自动收押。</p>
+    <ul>
+      <li><b>后端</b>：<code>api_insert_contract</code> 在签约（含生效租赁 / 已售）且押金金额&gt;0、客户已知时，自动生成一笔 <code>type='收', status='待收缴'</code> 的押金记录；迁移 <code>_ensure_deposit_columns</code> 给 deposits 增加 <code>status</code> 列（默认"已收"兼容旧数据）。</li>
+      <li><b>前端</b>：押金管理表新增"状态"列；"已收押金"KPI 仅统计 status='已收'（不再把待收缴误算为已收）。</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h2>重启后冒烟验证清单</h2>
+    <table>
+      <thead><tr><th>验证项</th><th>预期</th><th>方法</th></tr></thead>
+      <tbody>
+        <tr><td>后端启动无报错</td><td>日志无 Traceback；8000 监听</td><td>启动 backend.py，观察 /tmp/park_backend.log</td></tr>
+        <tr><td>商户派生</td><td>merchants 记录数 &gt; 4 且多数 unit_id/customer_id 非空</td><td><code>SELECT COUNT(*),SUM(customer_id IS NOT NULL) FROM merchants</code></td></tr>
+        <tr><td>客户下钻接口</td><td>返回 contracts/units/bills/apartment_fees 及 bill_summary</td><td><code>GET /api/customers/1/detail</code></td></tr>
+        <tr><td>工单元单元关联</td><td>新增工单可选单元；列表显示 unit_code</td><td>页面操作 + <code>GET /api/work-orders</code></td></tr>
+        <tr><td>签约自动收押</td><td>新建带押金合同 → deposits 多出一条 status='待收缴'</td><td>前端新建合同 / <code>GET /api/deposits</code></td></tr>
+        <tr><td>押金状态列</td><td>deposits 表含 status 列；历史记录默认为"已收"</td><td>PRAGMA table_info(deposits)</td></tr>
+        <tr><td>前端加载</td><td>app.js?v=20260813c 无 JS 报错；客户/工单/押金页正常</td><td>浏览器控制台</td></tr>
+      </tbody>
+    </table>
+    <div class="note">重启命令（待 Bash 恢复后执行）：<br>
+    <code>pkill -9 -f backend.py; /Users/yangtao/.workbuddy/binaries/python/versions/3.13.12/bin/python3 backend.py &gt; /tmp/park_backend.log 2&gt;&amp;1 &amp;</code><br>
+    本地请求需禁用代理直连（localhost 被 HTTP_PROXY 拦截会 502）。</div>
+  </div>
+
+  <div class="panel">
+    <h2>仍未解决的依赖项（非本次代码范围）</h2>
+    <ul>
+      <li><b>合同→账单真实金额</b>：117 份生效租赁仅 1 份有真实金额，公寓月租多为空 → 主营收线仍需导入真实台账后"生成月度账单"。</li>
+      <li><b>HT-AP 公寓合同 customer_id</b>：若为占位/空，则商户派生与公寓收费归集无法完全命中，需补全客户关联。</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

@@ -929,10 +929,22 @@ window.openCustomerModal = function(c = {}) {
 };
 window.openCrm = async function(id) {
   const c = CACHE.customers.find(x => x.id == id);
-  const follows = await API.get('/api/crm/followups?customer_id=' + id);
+  const [follows, detail] = await Promise.all([
+    API.get('/api/crm/followups?customer_id=' + id),
+    API.get('/api/customers/' + id + '/detail'),
+  ]);
   const stageOpts = STAGES.slice();
   const ch = (CACHE.channels || []).find(x => String(x.id) === String(c.channel_id));
   const chName = ch ? (ch.category + ' / ' + ch.name) : '-';
+  const contracts = detail.contracts || [];
+  const units = detail.units || [];
+  const bills = detail.bills || [];
+  const aptFees = detail.apartment_fees || [];
+  const bs = detail.bill_summary || { by_status: {}, receivable: 0, collected: 0 };
+  const contractHtml = contracts.length ? `<table class="mini"><thead><tr><th>合同号</th><th>类型</th><th>资产</th><th>金额</th><th>期限</th><th>状态</th></tr></thead><tbody>${contracts.map(ct => `<tr><td>${esc(ct.code)}</td><td>${tag(ct.type)}</td><td>${esc(uname(ct.unit_id))}</td><td>${yuan(ct.amount)}</td><td>${esc(ct.start_date || '-')} ~ ${esc(ct.end_date || '-')}</td><td>${tag(ct.status)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty" style="padding:10px">无合同</div>';
+  const unitHtml = units.length ? `<table class="mini"><thead><tr><th>单元</th><th>业态</th><th>面积</th><th>状态</th></tr></thead><tbody>${units.map(u => `<tr><td>${esc(u.code)}</td><td>${tag(u.type)}</td><td>${esc(u.area || '-')}㎡</td><td>${tag(u.status)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty" style="padding:10px">无关联资产</div>';
+  const billHtml = bills.length ? `<table class="mini"><thead><tr><th>项目</th><th>金额</th><th>已收</th><th>状态</th><th>账期</th></tr></thead><tbody>${bills.map(b => `<tr><td>${esc(b.item_type)}</td><td>${yuan(b.amount)}</td><td>${yuan(b.paid_amount || 0)}</td><td>${tag(b.status)}</td><td>${esc(b.period || '-')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty" style="padding:10px">无账单</div>';
+  const aptHtml = aptFees.length ? `<table class="mini"><thead><tr><th>单元</th><th>费项</th><th>金额</th><th>已收</th><th>状态</th></tr></thead><tbody>${aptFees.map(f => `<tr><td>${esc(f.unit_code || uname(f.unit_id))}</td><td>${esc(f.fee_type)}</td><td>${yuan(f.amount)}</td><td>${yuan(f.paid_amount || 0)}</td><td>${tag(f.status)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty" style="padding:10px">无公寓收费</div>';
   openModal('客户详情：' + c.name, `
     <div class="crm-detail">
       <div class="kv"><span>阶段</span><b>${tag(c.stage || '线索')}</b></div>
@@ -946,6 +958,10 @@ window.openCrm = async function(id) {
       <div class="kv"><span>电话</span><b>${esc(c.phone || '-')}</b></div>
       <div class="kv"><span>地址</span><b>${esc(c.address || '-')}</b></div>
     </div>
+    <div class="sub-block"><b>关联合同（${contracts.length}）</b>${contractHtml}</div>
+    <div class="sub-block"><b>名下资产单元（${units.length}）</b>${unitHtml}</div>
+    <div class="sub-block"><b>应收账单 <span class="mut">应收 ${yuan(bs.receivable)} / 已收 ${yuan(bs.collected)}</span></b>${billHtml}</div>
+    <div class="sub-block"><b>公寓收费（${aptFees.length}）</b>${aptHtml}</div>
     <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:10px"><b>跟进记录</b> ${can('customers_add') ? '<button class="btn sm ghost" id="addFollow">+ 新增跟进</button>' : ''}</div>
     <div id="followList">${follows.length ? follows.map(f => `<div class="follow-item"><div class="follow-head"><b>${f.date}</b> ${esc(f.type)} · ${esc(f.operator || '-')}</div><div class="follow-body">${esc(f.content)}</div>${f.next_plan ? `<div class="follow-next">下次：${esc(f.next_plan)}</div>` : ''}</div>`).join('') : '<div class="empty" style="padding:20px">暂无跟进</div>'}</div>`, null);
   if (can('customers_add')) {
@@ -1802,7 +1818,7 @@ window.deleteMerchant = async function(id) {
 async function renderDeposits() {
   const [deposits, contracts] = await Promise.all([API.get('/api/deposits'), API.get('/api/contracts')]);
   CACHE.contracts = contracts;
-  const received = deposits.filter(d => d.type === '收').reduce((a, b) => a + (b.amount || 0), 0);
+  const received = deposits.filter(d => d.type === '收' && (!d.status || d.status === '已收')).reduce((a, b) => a + (b.amount || 0), 0);
   const refunded = deposits.filter(d => d.type === '退').reduce((a, b) => a + (b.amount || 0), 0);
   const offset = deposits.filter(d => d.type === '抵扣').reduce((a, b) => a + (b.amount || 0), 0);
   const held = received - refunded - offset;
@@ -1816,17 +1832,18 @@ async function renderDeposits() {
       <div class="kpi purple"><div class="label">在押余额</div><div class="value">${yuan(held)}</div></div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>房间号</th><th>合同</th><th>客户</th><th>类型</th><th>金额</th><th>日期</th><th>备注</th></tr></thead>
+      <thead><tr><th>房间号</th><th>合同</th><th>客户</th><th>类型</th><th>金额</th><th>状态</th><th>日期</th><th>备注</th></tr></thead>
       <tbody id="depTable"></tbody>
     </table></div>`;
   $('#depTable').innerHTML = deposits.map(d => `
-    <tr><td>${esc(d.unit_code || uname(d.unit_id))}</td><td>${esc(ccode(d.contract_id))}</td><td>${esc(cname(d.customer_id))}</td><td>${tag(d.type)}</td><td>${yuan(d.amount)}</td><td>${esc(d.date || '-')}</td><td>${esc(d.note || '-')}</td></tr>`
-  ).join('') || '<tr><td colspan="7" class="empty">无记录</td></tr>';
+    <tr><td>${esc(d.unit_code || uname(d.unit_id))}</td><td>${esc(ccode(d.contract_id))}</td><td>${esc(cname(d.customer_id))}</td><td>${tag(d.type)}</td><td>${yuan(d.amount)}</td><td>${tag(d.status || '已收')}</td><td>${esc(d.date || '-')}</td><td>${esc(d.note || '-')}</td></tr>`
+  ).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
 }
 
 // ---------- 工单 ----------
 async function renderWorkOrders() {
-  const rows = await API.get('/api/work-orders');
+  const [rows, units] = await Promise.all([API.get('/api/work-orders'), API.get('/api/units')]);
+  CACHE.units = units;
   $('#view').innerHTML = `
     <div class="section-title">工单管理 <span class="sub">报修 / 巡检 / 派工</span></div>
     <div class="filters">
@@ -1834,7 +1851,7 @@ async function renderWorkOrders() {
       ${can('workorder_add') ? '<button class="btn" id="addWo">+ 新增工单</button>' : ''}
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>工单号</th><th>类型</th><th>报修人</th><th>描述</th><th>处理人</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>工单号</th><th>类型</th><th>关联单元</th><th>优先级</th><th>报修人</th><th>描述</th><th>处理人</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
       <tbody id="woTable"></tbody>
     </table></div>`;
   function renderList() {
@@ -1842,9 +1859,9 @@ async function renderWorkOrders() {
     let list = rows.filter(r => !st || r.status === st);
     $('#woTable').innerHTML = list.map(r => `
       <tr>
-        <td>${esc(r.code)}</td><td>${esc(r.type)}</td><td>${esc(r.reporter)}</td><td>${esc(r.description)}</td><td>${esc(r.assignee || '-')}</td><td>${tag(r.status)}</td><td>${esc(r.created_at)}</td>
+        <td>${esc(r.code)}</td><td>${esc(r.type)}</td><td>${r.unit_code ? esc(r.unit_code) : '-'}</td><td>${tag(r.priority || '普通')}</td><td>${esc(r.reporter)}</td><td>${esc(r.description)}</td><td>${esc(r.assignee || '-')}</td><td>${tag(r.status)}</td><td>${esc(r.created_at)}</td>
         <td>${can('workorder_edit') && r.status !== '已完成' ? `<button class="btn sm ghost" onclick="assignWorkOrder(${r.id})">派工</button>` : '-'}</td>
-      </tr>`).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="10" class="empty">无记录</td></tr>';
   }
   $('#fStatus').onchange = renderList;
   renderList();
@@ -1852,16 +1869,23 @@ async function renderWorkOrders() {
 }
 window.openWorkOrderModal = function(r = {}) {
   const isEdit = !!r.id;
+  const unitOpts = (CACHE.units || []).map(u => `<option value="${u.id}" ${String(r.unit_id) === String(u.id) ? 'selected' : ''}>${esc(u.code)}（${esc(u.type || '')}）</option>`).join('');
   openModal(isEdit ? '派工' : '新增工单', `
     <div class="form-grid">
       <div class="form-row"><label>工单号</label><input id="f_code" value="${esc(r.code || '')}"></div>
+      <div class="form-row"><label>优先级</label><select id="f_priority">${sel(['普通','紧急','特急'], r.priority || '普通')}</select></div>
       <div class="form-row"><label>类型</label><select id="f_type">${sel(['报修','巡检','投诉','其他'], r.type)}</select></div>
+      <div class="form-row"><label>关联单元</label><select id="f_unit_id"><option value="">未关联</option>${unitOpts}</select></div>
       <div class="form-row"><label>报修人</label><input id="f_reporter" value="${esc(r.reporter || '')}"></div>
       <div class="form-row"><label>处理人</label><input id="f_assignee" value="${esc(r.assignee || '')}"></div>
       <div class="form-row" style="grid-column:1/3"><label>描述</label><input id="f_desc" value="${esc(r.description || '')}"></div>
       <div class="form-row"><label>状态</label><select id="f_status">${sel(['待派','处理中','已完成'], r.status || '待派')}</select></div>
     </div>`, async () => {
-    const body = { code: $('#f_code').value, type: $('#f_type').value, reporter: $('#f_reporter').value, assignee: $('#f_assignee').value, description: $('#f_desc').value, status: $('#f_status').value };
+    const body = {
+      code: $('#f_code').value, type: $('#f_type').value, reporter: $('#f_reporter').value,
+      assignee: $('#f_assignee').value, description: $('#f_desc').value, status: $('#f_status').value,
+      priority: $('#f_priority').value, unit_id: $('#f_unit_id').value ? +$('#f_unit_id').value : null
+    };
     if (isEdit) await API.put('/api/work-orders/' + r.id, body);
     else await API.post('/api/work-orders', body);
     closeModal(); toast(isEdit ? '已更新' : '已新增'); renderWorkOrders();

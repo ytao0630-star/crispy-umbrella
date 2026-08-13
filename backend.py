@@ -258,6 +258,9 @@ def init_db():
     _ensure_meter_records(conn)
     _ensure_merchants(conn)
     _ensure_merchants_seed(conn)
+    _ensure_deposit_columns(conn)
+    _ensure_workorder_columns(conn)
+    _derive_merchants(conn)
     # 若为空则灌入演示数据
     cnt = c.execute("SELECT COUNT(*) AS n FROM buildings").fetchone()["n"]
     if cnt == 0:
@@ -770,6 +773,66 @@ def _ensure_merchants_seed(conn):
     conn.commit()
 
 
+def _ensure_deposit_columns(conn):
+    """押金表补充 status 列（待收缴/已收/已退），用于签约自动收押的状态跟踪。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(deposits)").fetchall()}
+    if "status" not in cols:
+        try:
+            conn.execute("ALTER TABLE deposits ADD COLUMN status TEXT DEFAULT '已收'")
+            conn.commit()
+        except Exception:
+            pass
+
+
+def _ensure_workorder_columns(conn):
+    """工单表补充 priority / due_at / customer_id 列，打通单元关联与优先级/SLA。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(work_orders)").fetchall()}
+    for col, ddl in [("priority", "TEXT DEFAULT '普通'"), ("due_at", "TEXT"), ("customer_id", "INTEGER")]:
+        if col not in cols:
+            try:
+                conn.execute(f"ALTER TABLE work_orders ADD COLUMN {col} {ddl}")
+                conn.commit()
+            except Exception:
+                pass
+
+
+def _derive_merchants(conn):
+    """消除商户孤岛：① 按名称把现有商户关联到客户/单元；② 从生效租/售合同派生真实商户。幂等。"""
+    c = conn.cursor()
+    # 1) 把现有（演示）商户按名称关联到客户，并补齐关联单元
+    custs = c.execute("SELECT id,name FROM customers").fetchall()
+    for m in c.execute("SELECT id,name,customer_id FROM merchants WHERE customer_id IS NULL").fetchall():
+        for cu in custs:
+            if cu["name"] and m["name"] and (cu["name"] in m["name"] or m["name"] in cu["name"]):
+                c.execute("UPDATE merchants SET customer_id=? WHERE id=?", (cu["id"], m["id"]))
+                u = c.execute("SELECT id FROM units WHERE current_customer_id=? LIMIT 1", (cu["id"],)).fetchone()
+                if u:
+                    c.execute("UPDATE merchants SET unit_id=? WHERE id=?", (u["id"], m["id"]))
+                break
+    # 2) 从生效租/售合同派生商户（真实商业租户）
+    existing = {(r["customer_id"], r["unit_id"])
+                for r in c.execute("SELECT customer_id,unit_id FROM merchants WHERE customer_id IS NOT NULL").fetchall()}
+    contracts = c.execute(
+        "SELECT * FROM contracts WHERE type IN ('租赁','销售') AND status IN ('生效','已售') "
+        "AND customer_id IS NOT NULL AND unit_id IS NOT NULL").fetchall()
+    ts = now()
+    for ct in contracts:
+        key = (ct["customer_id"], ct["unit_id"])
+        if key in existing:
+            continue
+        cu = c.execute("SELECT name FROM customers WHERE id=?", (ct["customer_id"],)).fetchone()
+        name = cu["name"] if cu else ("合同" + ct["code"])
+        cat = "厂房租赁" if ct["type"] == "租赁" else "厂房销售"
+        code = "M" + str(1000 + ct["id"])
+        c.execute(
+            "INSERT INTO merchants (code,name,customer_id,unit_id,category,status,start_date,end_date,"
+            "pay_cycle,rent_type,fixed_rent,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (code, name, ct["customer_id"], ct["unit_id"], cat, ct["status"], ct["start_date"],
+             ct["end_date"], ct.get("pay_cycle"), "固定租金", ct.get("amount") or 0, ts, ts))
+        existing.add(key)
+    conn.commit()
+
+
 def seed_demo(conn):
     c = conn.cursor()
     # 楼栋
@@ -1192,6 +1255,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_units(q("status"), q("type"), q("building_id")))
         if path == "/api/factory-year-view":
             return self._send_json(self.api_factory_year_view(q("year")))
+        if path.startswith("/api/customers/") and path.endswith("/detail"):
+            cid = path.split("/")[3]
+            return self._send_json(self.api_customer_detail(cid))
         if path == "/api/customers":
             return self._send_json(self.api_list("customers"))
         if path == "/api/contracts":
@@ -1722,14 +1788,58 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def api_work_orders(self, status):
         conn = self._db()
-        sql = "SELECT * FROM work_orders WHERE 1=1"
+        sql = ("SELECT w.*, u.code AS unit_code, u.type AS unit_type "
+               "FROM work_orders w LEFT JOIN units u ON w.unit_id = u.id WHERE 1=1")
         args = []
         if status:
-            sql += " AND status=?"; args.append(status)
-        sql += " ORDER BY id DESC"
+            sql += " AND w.status=?"; args.append(status)
+        sql += " ORDER BY w.id DESC"
         rows = conn.execute(sql, args).fetchall()
         conn.close()
         return rows
+
+    def api_customer_detail(self, cid):
+        """客户下钻：聚合名下合同、资产单元、应收账单、公寓收费，消除客户→合同→资产→应收关联断点。"""
+        conn = self._db()
+        c = conn.cursor()
+        try:
+            cid = int(cid)
+        except Exception:
+            conn.close()
+            return {"error": "invalid id"}
+        contracts = c.execute(
+            "SELECT * FROM contracts WHERE customer_id=? ORDER BY sign_date DESC, id DESC", (cid,)).fetchall()
+        units = c.execute(
+            "SELECT * FROM units WHERE current_customer_id=? ORDER BY code", (cid,)).fetchall()
+        bills = c.execute(
+            "SELECT * FROM bills WHERE customer_id=? ORDER BY period DESC, id DESC", (cid,)).fetchall()
+        # 公寓收费：通过房间归属单元反查（apartment_fees 无 customer_id，经 room_id→公寓房间→units 归属）
+        apt_fees = c.execute(
+            "SELECT af.*, u.code AS unit_code FROM apartment_fees af "
+            "LEFT JOIN apartment_rooms ar ON af.room_id = ar.id "
+            "LEFT JOIN units u ON ar.unit_id = u.id "
+            "WHERE u.current_customer_id=? ORDER BY af.id DESC", (cid,)).fetchall()
+        by_status = {}
+        for b in bills:
+            s = b["status"]
+            d = by_status.setdefault(s, {"amount": 0.0, "paid": 0.0, "cnt": 0})
+            d["amount"] += (b["amount"] or 0)
+            d["paid"] += (b["paid_amount"] or 0)
+            d["cnt"] += 1
+        receivable = sum((b["amount"] or 0) for b in bills if b["status"] in ("待收", "部分收"))
+        collected = sum((b["paid_amount"] or 0) for b in bills)
+        conn.close()
+        return {
+            "contracts": contracts,
+            "units": units,
+            "bills": bills,
+            "apartment_fees": apt_fees,
+            "bill_summary": {
+                "by_status": by_status,
+                "receivable": round(receivable, 2),
+                "collected": round(collected, 2),
+            },
+        }
 
     def api_insert_contract(self, body):
         conn = self._db()
@@ -1755,6 +1865,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif ct["type"] == "租赁" and ct["status"] == "生效":
             c.execute("UPDATE units SET status='在租', current_contract_id=?, current_customer_id=? WHERE id=?",
                       (new_id, ct["customer_id"], ct["unit_id"]))
+        # 签约自动收押：存在押金金额且客户已知时，自动生成一笔待收缴押金
+        dep = ct.get("deposit")
+        if dep and float(dep) > 0 and ct.get("customer_id"):
+            c.execute(
+                "INSERT INTO deposits (contract_id,unit_id,customer_id,amount,type,date,status,note) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (new_id, ct["unit_id"], ct["customer_id"], float(dep), "收",
+                 ct.get("sign_date") or today(), "待收缴", "签约自动收取"))
         conn.commit()
         conn.close()
         return ct
