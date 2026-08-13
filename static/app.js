@@ -2181,14 +2181,15 @@ async function renderInspectionTasks() {
 
 // ---------- 系统管理 ----------
 async function renderSystem() {
-  const tabs = { users: renderSysUsers, depts: renderSysDepts, roles: renderSysRoles, perms: renderSysPerms, menus: renderSysMenus, rules: renderSysRules, dict: renderSysDict, audit: renderSysAudit };
+  const tabs = { users: renderSysUsers, depts: renderSysDepts, roles: renderSysRoles, perms: renderSysPerms, menus: renderSysMenus, calendar: renderSysCalendar, rules: renderSysRules, dict: renderSysDict, audit: renderSysAudit };
   $('#view').innerHTML = `<div class="section-title">系统管理</div><div id="sysView"></div>`;
   (tabs[SYS_TAB] || renderSysUsers)();
 }
+let CAL_MONTH = new Date().toISOString().slice(0, 7);
+function prevMonth(ym) { let [y, m] = ym.split('-').map(Number); m--; if (m < 1) { m = 12; y--; } return `${y}-${String(m).padStart(2, '0')}`; }
+function nextMonth(ym) { let [y, m] = ym.split('-').map(Number); m++; if (m > 12) { m = 1; y++; } return `${y}-${String(m).padStart(2, '0')}`; }
 async function renderSysUsers() {
-  const rows = await API.get('/api/users');
-  const depts = await API.get('/api/departments');
-  const roles = await API.get('/api/sys_roles');
+  const [rows, depts, roles] = await Promise.all([API.get('/api/users'), API.get('/api/departments'), API.get('/api/sys_roles')]);
   $('#sysView').innerHTML = `
     <div class="btn-row"><button class="btn" id="addU">+ 新增人员</button></div>
     <div class="table-wrap"><table>
@@ -2196,22 +2197,52 @@ async function renderSysUsers() {
       <tbody id="uTable"></tbody>
     </table></div>`;
   $('#uTable').innerHTML = rows.map(u => `
-    <tr><td>${esc(u.username)}</td><td>${esc(u.name)}</td><td>${esc(u.department_name || '-')}</td><td>${esc(u.role_name || u.role || '-')}</td><td>${esc(u.phone || '-')}</td><td>${tag(u.status)}</td>
-    <td><button class="btn sm ghost" onclick="editUser(${u.id})">编辑</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">无记录</td></tr>';
-  $('#addU').onclick = () => openUserModal();
+    <tr><td>${esc(u.username)}</td><td>${esc(u.name)}</td><td>${esc(u.department_name || '-')}</td><td>${esc(u.role_name || u.role || '-')}</td><td>${esc(u.phone || '-')}</td><td>${tag(u.status || '启用')}</td>
+    <td>
+      <button class="btn sm ghost" onclick="editUser(${u.id})">编辑</button>
+      <button class="btn sm danger" onclick="delUser(${u.id},'${esc(u.name || u.username)}')">删除</button>
+    </td></tr>`).join('') || '<tr><td colspan="7" class="empty">无记录</td></tr>';
+  $('#addU').onclick = () => openUserModal({}, depts, roles);
 }
-window.openUserModal = function(u = {}) {
+window.openUserModal = function(u = {}, depts = null, roles = null) {
   const isEdit = !!u.id;
-  openModal(isEdit ? '编辑人员' : '新增人员', `
-    <div class="form-grid"><div class="form-row"><label>用户名</label><input id="f_username" value="${esc(u.username || '')}"></div><div class="form-row"><label>姓名</label><input id="f_name" value="${esc(u.name || '')}"></div><div class="form-row"><label>电话</label><input id="f_phone" value="${esc(u.phone || '')}"></div><div class="form-row"><label>邮箱</label><input id="f_email" value="${esc(u.email || '')}"></div><div class="form-row"><label>密码</label><input id="f_password" type="password" placeholder="${isEdit ? '留空不修改' : ''}"></div><div class="form-row"><label>角色</label><input id="f_role" value="${esc(u.role || '')}"></div></div>`, async () => {
-    const body = { username: $('#f_username').value, name: $('#f_name').value, phone: $('#f_phone').value, email: $('#f_email').value, role: $('#f_role').value };
-    if ($('#f_password').value) body.password = $('#f_password').value;
-    if (isEdit) await API.put('/api/users/' + u.id, body);
-    else await API.post('/api/users', body);
-    closeModal(); toast('已保存'); renderSysUsers();
-  });
+  const load = async () => {
+    if (!depts) depts = await API.get('/api/departments');
+    if (!roles) roles = await API.get('/api/sys_roles');
+    openModal(isEdit ? '编辑人员' : '新增人员', `
+      <div class="form-grid">
+        <div class="form-row"><label>用户名</label><input id="f_username" value="${esc(u.username || '')}" ${isEdit ? 'readonly' : ''}></div>
+        <div class="form-row"><label>姓名</label><input id="f_name" value="${esc(u.name || '')}"></div>
+        <div class="form-row"><label>部门</label><select id="f_dept">${depts.map(d => `<option value="${d.id}" ${d.id == u.department_id ? 'selected' : ''}>${esc(d.name)}</option>`).join('') || '<option value="">（无部门）</option>'}</select></div>
+        <div class="form-row"><label>角色</label><select id="f_role">${roles.map(r => `<option value="${r.id}" ${r.id == u.role_id ? 'selected' : ''}>${esc(r.name)}</option>`).join('') || '<option value="">（无角色）</option>'}</select></div>
+        <div class="form-row"><label>状态</label><select id="f_status">${['启用', '禁用'].map(s => `<option value="${s}" ${(u.status || '启用') == s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+        <div class="form-row"><label>电话</label><input id="f_phone" value="${esc(u.phone || '')}"></div>
+        <div class="form-row"><label>邮箱</label><input id="f_email" value="${esc(u.email || '')}"></div>
+        <div class="form-row"><label>密码</label><input id="f_password" type="password" placeholder="${isEdit ? '留空不修改' : '必填'}"></div>
+      </div>`, async () => {
+      const deptId = $('#f_dept').value;
+      const roleId = $('#f_role').value;
+      const body = {
+        username: $('#f_username').value, name: $('#f_name').value,
+        department_id: deptId ? +deptId : null,
+        role_id: roleId ? +roleId : null,
+        status: $('#f_status').value,
+        phone: $('#f_phone').value, email: $('#f_email').value
+      };
+      if ($('#f_password').value) body.password = $('#f_password').value;
+      if (isEdit) await API.put('/api/users/' + u.id, body);
+      else await API.post('/api/users', body);
+      closeModal(); toast('已保存'); renderSysUsers();
+    });
+  };
+  load();
 };
 window.editUser = function(id) { API.get('/api/users').then(rows => { const u = rows.find(x => x.id == id); openUserModal(u); }); };
+window.delUser = async function(id, name) {
+  if (!confirm(`确定删除人员「${name}」？此操作不可恢复。`)) return;
+  await API.delete('/api/users/' + id);
+  toast('已删除'); renderSysUsers();
+};
 
 async function renderSysDepts() {
   const rows = await API.get('/api/departments');
@@ -2233,10 +2264,103 @@ async function renderSysRoles() {
   $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>描述</th><th>排序</th></tr></thead><tbody id="rTable"></tbody></table></div>`;
   $('#rTable').innerHTML = rows.map(r => `<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td><td>${esc(r.description || '-')}</td><td>${r.sort || 0}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">无记录</td></tr>';
 }
+async function renderSysCalendar() {
+  const [y, m] = CAL_MONTH.split('-').map(Number);
+  const events = await API.get('/api/calendar-events?month=' + CAL_MONTH);
+  const map = {};
+  events.forEach(e => { (map[e.date] = map[e.date] || []).push(e); });
+  const firstDow = new Date(y, m - 1, 1).getDay();
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const lead = (firstDow + 6) % 7;
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push('');
+  for (let d = 1; d <= daysInMonth; d++) cells.push(String(d).padStart(2, '0'));
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  const dowHdr = ['一', '二', '三', '四', '五', '六', '日'].map(x => `<th>${x}</th>`).join('');
+  $('#sysView').innerHTML = `
+    <div class="cal-head">
+      <button class="btn sm ghost" id="calPrev">‹ 上月</button>
+      <span class="cal-title">${y}年${m}月</span>
+      <button class="btn sm ghost" id="calNext">下月 ›</button>
+      <button class="btn sm" id="calToday">回到今天</button>
+    </div>
+    <div class="cal-legend">
+      <span class="lg lg-wo">工单</span>
+      <span class="lg lg-xj">巡检</span>
+      <span class="lg lg-done">已完成</span>
+      <span class="lg lg-over">待处理/逾期</span>
+    </div>
+    <div class="table-wrap"><table class="cal">
+      <thead><tr>${dowHdr}</tr></thead>
+      <tbody>${weeks.map(wk => `<tr>${wk.map(c => {
+        if (!c) return '<td class="cal-empty"></td>';
+        const dateStr = `${CAL_MONTH}-${c}`;
+        const evs = map[dateStr] || [];
+        const isToday = dateStr === todayStr ? 'cal-today' : '';
+        const chips = evs.map(e => {
+          let cls = e.type === '工单' ? 'wo' : 'xj';
+          if (['已完成', '已巡检', '已关闭'].includes(e.status)) cls += ' done';
+          else if (['逾期', '待巡检', '待派', '处理中', '进行中'].includes(e.status)) cls += ' over';
+          return `<span class="cal-chip ${cls}" title="${esc(e.type)} ${esc(e.title)}（${esc(e.status)}）">${esc(e.type)}·${esc(e.title)}</span>`;
+        }).join('');
+        return `<td class="cal-cell ${isToday}"><div class="cal-d">${+c}</div>${chips}</td>`;
+      }).join('')}</tr>`).join('')}</tbody>
+    </table></div>`;
+  $('#calPrev').onclick = () => { CAL_MONTH = prevMonth(CAL_MONTH); renderSysCalendar(); };
+  $('#calNext').onclick = () => { CAL_MONTH = nextMonth(CAL_MONTH); renderSysCalendar(); };
+  $('#calToday').onclick = () => { CAL_MONTH = new Date().toISOString().slice(0, 7); renderSysCalendar(); };
+}
+
+const PERM_RESOURCES = [
+  ['dashboard', '看板'], ['assets', '资产台账'], ['leases', '公寓管理'], ['factories', '厂房管理'],
+  ['customers', '客户'], ['contracts', '合同'], ['billing', '收费'], ['workorders', '工单'], ['system', '系统设置']
+];
+const PERM_ACTIONS = [['view', '查看'], ['edit', '操作']];
+let PERM_ROLE_ID = null;
 async function renderSysPerms() {
-  const rows = await API.get('/api/role_permissions');
-  $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>角色ID</th><th>资源</th><th>动作</th><th>允许</th></tr></thead><tbody id="pTable"></tbody></table></div>`;
-  $('#pTable').innerHTML = rows.map(p => `<tr><td>${p.role_id}</td><td>${esc(p.resource)}</td><td>${esc(p.action)}</td><td>${p.allowed ? '是' : '否'}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">无记录</td></tr>';
+  const roles = await API.get('/api/sys_roles');
+  if (PERM_ROLE_ID == null) PERM_ROLE_ID = roles[0] && roles[0].id;
+  $('#sysView').innerHTML = `
+    <div class="btn-row">
+      <label>角色：</label>
+      <select id="permRole">${roles.map(r => `<option value="${r.id}" ${r.id == PERM_ROLE_ID ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+      <span class="muted">勾选表示允许该角色访问 / 操作对应模块</span>
+    </div>
+    <div class="table-wrap"><table class="perm-tbl">
+      <thead><tr><th>模块</th><th>查看</th><th>操作</th></tr></thead>
+      <tbody id="permBody"></tbody>
+    </table></div>`;
+  $('#permRole').onchange = (e) => { PERM_ROLE_ID = +e.target.value; loadPermMatrix(); };
+  await loadPermMatrix();
+}
+async function loadPermMatrix() {
+  const perms = await API.get('/api/role_permissions?role_id=' + PERM_ROLE_ID);
+  const map = {};
+  perms.forEach(p => { map[p.resource + '|' + p.action] = p; });
+  $('#permBody').innerHTML = PERM_RESOURCES.map(([res, label]) => {
+    const cells = PERM_ACTIONS.map(([act]) => {
+      const p = map[res + '|' + act];
+      const checked = p && p.allowed ? 'checked' : '';
+      return `<td><input type="checkbox" data-res="${res}" data-act="${act}" data-id="${p ? p.id : ''}" ${checked}></td>`;
+    }).join('');
+    return `<tr><td>${label}</td>${cells}</tr>`;
+  }).join('');
+  $('#permBody').querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.onchange = async () => {
+      const res = cb.dataset.res, act = cb.dataset.act, id = cb.dataset.id;
+      const allowed = cb.checked ? 1 : 0;
+      let r;
+      if (id) {
+        r = await API.put('/api/role_permissions/' + id, { allowed });
+      } else {
+        r = await API.post('/api/role_permissions', { role_id: PERM_ROLE_ID, resource: res, action: act, allowed });
+        if (r && r.id) cb.dataset.id = r.id;
+      }
+      toast('已更新');
+    };
+  });
 }
 async function renderSysMenus() {
   const rows = await API.get('/api/sys_menus');

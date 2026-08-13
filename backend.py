@@ -1416,6 +1416,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_list("system_rules"))
         if path == "/api/data_dict":
             return self._send_json(self.api_data_dict(q("type")))
+        if path == "/api/calendar-events":
+            return self._send_json(self.api_calendar_events(q("month")))
         # 市场调研 / CRM
         if path == "/api/market-research":
             return self._send_json(self.api_list("market_research"))
@@ -1686,8 +1688,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send_json({"error": "not found"}, 404)
 
     # ---- API 实现 ----
-    def _gen_inspection_tasks(self, conn, today_str):
-        """惰性生成：为每个启用计划补齐截至今天尚未生成的巡检任务（无定时框架，打开任务页时触发）。"""
+    def _gen_inspection_tasks(self, conn, today_str, until=None):
+        """惰性生成：为每个启用计划补齐巡检任务。until 缺省为今天；传月末可让日历显示未来排期。"""
         cur = conn.cursor()
         cyc = {"日": 1, "周": 7, "月": 30, "季": 90, "年": 365}
         plans = cur.execute("SELECT * FROM inspection_plans WHERE enabled=1").fetchall()
@@ -1697,7 +1699,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 d = datetime.date.fromisoformat(nd)
             except Exception:
                 d = datetime.date.fromisoformat(today_str)
-            t = datetime.date.fromisoformat(today_str)
+            end_str = until or today_str
+            try:
+                t = datetime.date.fromisoformat(end_str)
+            except Exception:
+                t = datetime.date.fromisoformat(today_str)
             step = cyc.get(p["cycle"], 30)
             guard = 0
             while d <= t and guard < 200:
@@ -1731,6 +1737,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out.append(d)
         conn.close()
         return out
+
+    def api_calendar_events(self, month):
+        """项目日历：聚合当月巡检任务与工单截止，返回按日期分组的事件。"""
+        if not month or not re.match(r"^\d{4}-\d{2}$", month):
+            month = datetime.date.today().strftime("%Y-%m")
+        try:
+            y, m = (int(x) for x in month.split("-"))
+            first = datetime.date(y, m, 1)
+            nxt = datetime.date(y + 1, 1, 1) if m == 12 else datetime.date(y, m + 1, 1)
+            last = nxt - datetime.timedelta(days=1)
+        except Exception:
+            first = datetime.date.today().replace(day=1)
+            last = first
+        first_s, last_s = first.isoformat(), last.isoformat()
+        conn = self._db()
+        # 为所查看月份补齐巡检任务（含未来排期），使其出现在日历中
+        self._gen_inspection_tasks(conn, today(), until=last_s)
+        cur = conn.cursor()
+        events = []
+        for t in cur.execute(
+                "SELECT id,code,due_date,status FROM inspection_tasks WHERE due_date BETWEEN ? AND ?",
+                (first_s, last_s)).fetchall():
+            events.append({"date": t["due_date"], "title": t["code"], "type": "巡检", "status": t["status"], "id": t["id"]})
+        for w in cur.execute(
+                "SELECT id,code,due_at,status FROM work_orders WHERE due_at BETWEEN ? AND ?",
+                (first_s, last_s)).fetchall():
+            events.append({"date": w["due_at"], "title": w["code"], "type": "工单", "status": w["status"], "id": w["id"]})
+        conn.close()
+        return events
 
     def api_generate_plan(self, plan_id):
         """手动立即生成：为指定计划创建下一期巡检任务并推进 next_due_date。"""
