@@ -38,14 +38,26 @@
         <button class="nav-item" data-view="assets">资产台账</button>
       </div>
     </div>
-    <!-- 租赁运营 -->
+    <!-- 合同中心 (一级: 横切公寓/厂房/销售的合同) -->
+    <div class="nav-group open">
+      <button class="nav-group-head">📄 合同中心<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="contracts">合同</button>
+      </div>
+    </div>
+    <!-- 押金管理 (一级: 横切收缴/退还) -->
+    <div class="nav-group open">
+      <button class="nav-group-head">🧾 押金管理<span class="caret">▾</span></button>
+      <div class="nav-sub">
+        <button class="nav-item" data-view="deposits">押金</button>
+      </div>
+    </div>
+    <!-- 租赁运营 (仅保留资产运营视图) -->
     <div class="nav-group open">
       <button class="nav-group-head">🏠 租赁运营<span class="caret">▾</span></button>
       <div class="nav-sub">
         <button class="nav-item" data-view="leases">公寓管理</button>
         <button class="nav-item" data-view="factory-rental">厂房租赁</button>
-        <button class="nav-item" data-view="contracts">合同</button>
-        <button class="nav-item" data-view="deposits">押金</button>
         <button class="nav-item" data-view="merchants">商户管理</button>
       </div>
     </div>
@@ -119,6 +131,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js?v=20260813d"></script>
+  <script src="/static/app.js?v=20260813e"></script>
 </body>
 </html>
