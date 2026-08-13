@@ -2725,21 +2725,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not ct:
             return {"error": "contract not found"}
         move_out = body.get("actual_end_date") or today()
-        # 更新合同状态
-        c.execute(
-            "UPDATE contracts SET status='退租', actual_end_date=?, move_out_reason=?, deposit_status=? WHERE id=?",
-            (move_out, body.get("move_out_reason", "到期退租"), body.get("deposit_status", "待退"), cid))
         # 单元置空
         c.execute("UPDATE units SET status='空置', current_contract_id=NULL, current_customer_id=NULL WHERE id=?",
                   (ct["unit_id"],))
-        # 押金处理
-        dep_type = body.get("deposit_action")
-        dep_amt = float(body.get("deposit_amount") or 0)
-        if dep_type and dep_amt:
-            c.execute(
-                "INSERT INTO deposits (contract_id,unit_id,customer_id,amount,type,date,note) VALUES (?,?,?,?,?,?,?)",
-                (cid, ct["unit_id"], ct["customer_id"], dep_amt,
-                 dep_type, today(), body.get("deposit_note", "退租结算")))
+        # 押金处理：退租自动退押
+        # 1) 统计该合同已收押金（收 + 已收/部分收）
+        collected = c.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS collected FROM deposits "
+            "WHERE contract_id=? AND type='收' AND status IN ('已收', '部分收')",
+            (cid,)).fetchone()["collected"]
+        dep_type = body.get("deposit_action")  # 期望: '退' / '不退' / None(自动)
+        dep_amt = body.get("deposit_amount")
+        existing_refund = c.execute(
+            "SELECT id FROM deposits WHERE contract_id=? AND type='退'", (cid,)).fetchone()
+        if dep_type in (None, "", "auto", "退"):
+            # 默认退租自动退押：把已收押金转为一笔待退款记录（幂等：已存在则不重复）
+            if collected > 0 and not existing_refund:
+                refund_amt = float(dep_amt) if dep_amt else collected
+                if refund_amt > 0:
+                    c.execute(
+                        "INSERT INTO deposits (contract_id,unit_id,customer_id,amount,type,date,status,note) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (cid, ct["unit_id"], ct["customer_id"], refund_amt, "退", today(),
+                         "待退款", "退租自动退还（原已收押金）"))
+                    deposit_status = "待退"
+                else:
+                    deposit_status = "无押"
+            elif existing_refund:
+                deposit_status = "待退"
+            else:
+                deposit_status = "无押"
+        else:
+            # 显式不退（如抵扣欠费）
+            deposit_status = "不退"
+        # 更新合同状态
+        c.execute(
+            "UPDATE contracts SET status='退租', actual_end_date=?, move_out_reason=?, deposit_status=? WHERE id=?",
+            (move_out, body.get("move_out_reason", "到期退租"), deposit_status, cid))
         # 末月租金按天结算（如果设置了金额）
         final_rent = body.get("final_rent")
         if final_rent is not None:

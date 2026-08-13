@@ -1261,9 +1261,38 @@ window.openContractModal = async function(unitId, type) {
   });
 };
 window.terminateContract = async function(id) {
-  if (!confirm('确认退租？')) return;
-  await API.post('/api/contracts/' + id + '/terminate', { actual_end_date: today(), move_out_reason: '到期退租', deposit_action: '暂不退', deposit_amount: 0 });
-  toast('已退租'); renderContracts();
+  const deposits = CACHE.deposits || await API.get('/api/deposits');
+  if (!CACHE.deposits) CACHE.deposits = deposits;
+  const collected = deposits
+    .filter(d => d.contract_id == id && d.type === '收' && (!d.status || d.status === '已收' || d.status === '部分收'))
+    .reduce((a, b) => a + (b.amount || 0), 0);
+  openModal('退租结算', `
+    <div class="form-grid">
+      <div class="form-row"><label>退租日期</label><input id="t_date" type="date" value="${today()}"></div>
+      <div class="form-row"><label>退租原因</label><input id="t_reason" value="到期退租"></div>
+      <div class="form-row" style="grid-column:1/3"><label>押金处理</label>
+        <div class="radio-row">
+          <label><input type="radio" name="t_dep" value="退" ${collected > 0 ? 'checked' : ''}> 退还押金（已收 ¥${fmt(collected)} → 自动生成待退款）</label>
+          <label><input type="radio" name="t_dep" value="不退" ${collected <= 0 ? 'checked' : ''}> 不退（抵扣欠费/损坏）</label>
+        </div>
+      </div>
+      <div class="form-row"><label>退还金额</label><input id="t_dep_amt" type="number" min="0" step="0.01" value="${collected}" ${collected > 0 ? '' : 'disabled'}></div>
+      <div class="form-row"><label>末月租金</label><input id="t_rent" type="number" min="0" step="0.01" placeholder="可选"></div>
+      <div class="form-row"><label>末月水电</label><input id="t_util" type="number" min="0" step="0.01" placeholder="可选"></div>
+    </div>`, async () => {
+    const action = document.querySelector('input[name=t_dep]:checked').value;
+    const body = {
+      actual_end_date: $('#t_date').value || today(),
+      move_out_reason: $('#t_reason').value || '到期退租',
+      deposit_action: action,
+      deposit_amount: action === '退' ? parseFloat($('#t_dep_amt').value || 0) : 0,
+      final_rent: $('#t_rent').value ? parseFloat($('#t_rent').value) : null,
+      final_utility: $('#t_util').value ? parseFloat($('#t_util').value) : null,
+    };
+    await API.post('/api/contracts/' + id + '/terminate', body);
+    closeModal(); toast('已退租并完成结算'); renderContracts();
+    if (typeof renderDeposits === 'function') renderDeposits();
+  });
 };
 
 // ---------- 收费 / 账单 ----------
