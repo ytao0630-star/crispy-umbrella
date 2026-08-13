@@ -1501,6 +1501,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/bills/") and path.endswith("/receipt"):
             bid = path.split("/")[-2]
             return self._send_json(self.api_receipt(bid, body))
+        # 押金单条更新（标记已收 / 部分收 / 调整金额 / 备注等）
+        if path.startswith("/api/deposits/") and path.count("/") == 3:
+            rid = path.split("/")[-1]
+            if rid.isdigit():
+                return self._send_json(self.api_update("deposits", rid, body))
         # 系统管理
         for table in ["users", "departments", "sys_roles", "role_permissions", "sys_menus", "system_rules", "data_dict"]:
             if path.startswith(f"/api/{table}/"):
