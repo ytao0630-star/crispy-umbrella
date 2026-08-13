@@ -13,6 +13,8 @@ import json
 import os
 import datetime
 import urllib.parse
+import urllib.request
+import secrets
 import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -282,6 +284,8 @@ def init_db():
     _ensure_workorder_columns(conn)
     _ensure_contract_columns(conn)
     _ensure_receipt_columns(conn)
+    _ensure_users_columns(conn)
+    _ensure_sessions(conn)
     _derive_merchants(conn)
     # 若为空则灌入演示数据
     cnt = c.execute("SELECT COUNT(*) AS n FROM buildings").fetchone()["n"]
@@ -715,6 +719,14 @@ def _ensure_meter_records(conn):
         electric_prev REAL, electric_curr REAL, electric_price REAL,
         electric_usage REAL, electric_fee REAL,
         total_fee REAL, created_at TEXT)""")
+    # 抄表归属人（小程序/Web 谁抄的）；幂等补列，便于后期按 reader 过滤与审计。
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(meter_reading_records)").fetchall()}
+    if "reader_id" not in cols:
+        try:
+            c.execute("ALTER TABLE meter_reading_records ADD COLUMN reader_id INTEGER")
+            conn.commit()
+        except Exception:
+            pass
     # 不再灌演示数据：抄表记录由「水电抄表」页面按资产台账的应抄表单元录入。
     conn.commit()
 
@@ -841,6 +853,28 @@ def _ensure_receipt_columns(conn):
             conn.commit()
         except Exception:
             pass
+
+
+def _ensure_users_columns(conn):
+    """用户表补充 openid（微信小程序登录映射）。幂等。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "openid" not in cols:
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN openid TEXT")
+            conn.commit()
+        except Exception:
+            pass
+
+
+def _ensure_sessions(conn):
+    """登录会话表：微信小程序登录后签发的 token 在此落库，供后续鉴权中间件使用。"""
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER,
+        openid TEXT,
+        expires_at TEXT,
+        created_at TEXT)""")
+    conn.commit()
 
 
 def _derive_merchants(conn):
@@ -1326,6 +1360,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_list("inspection_plans"))
         if path == "/api/inspection-tasks":
             return self._send_json(self.api_inspection_tasks(q("status")))
+        if path == "/api/wx-me":
+            tok = q("token") or (self.headers.get("Authorization") or "").replace("Bearer ", "")
+            return self._send_json(self.api_wx_me(tok))
         if path == "/api/roles":
             return self._send_json(ROLES)
         if path == "/api/leases":
@@ -1441,6 +1478,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if re.match(r"^/api/inspection-plans/\d+/generate$", path):
             pid = int(path.split("/")[-2])
             return self._send_json(self.api_generate_plan(pid), 201)
+        if path == "/api/wx-login":
+            return self._send_json(self.api_wx_login(body), 200)
         if path == "/api/reset":
             init_db()
             return self._send_json({"ok": True})
@@ -1669,8 +1708,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not exists:
                     code = "XJ-" + due_str.replace("-", "") + "-" + str(p["id"]).zfill(3)
                     cur.execute(
-                        "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,generated_at) VALUES (?,?,?,?,?,?)",
-                        (code, p["id"], p["category"], due_str, "待巡检", now()))
+                        "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,inspector_id,generated_at) VALUES (?,?,?,?,?,?,?)",
+                        (code, p["id"], p["category"], due_str, "待巡检", p["assignee_id"], now()))
                 d = d + datetime.timedelta(days=step)
                 guard += 1
             cur.execute("UPDATE inspection_plans SET next_due_date=? WHERE id=?",
@@ -1714,8 +1753,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not exists:
             code = "XJ-" + due_str.replace("-", "") + "-" + str(plan_id).zfill(3)
             cur.execute(
-                "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,generated_at) VALUES (?,?,?,?,?,?)",
-                (code, plan_id, p["category"], due_str, "待巡检", now()))
+                "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,inspector_id,generated_at) VALUES (?,?,?,?,?,?,?)",
+                (code, plan_id, p["category"], due_str, "待巡检", p["assignee_id"], now()))
             self._audit(conn, "生成", "巡检任务", f"手动生成巡检任务 {code}（计划 {p['name']}）", None)
         nd2 = (d + datetime.timedelta(days=cyc.get(p["cycle"], 30))).isoformat()
         cur.execute("UPDATE inspection_plans SET next_due_date=? WHERE id=?", (nd2, plan_id))
@@ -1725,6 +1764,84 @@ class Handler(http.server.BaseHTTPRequestHandler):
             (plan_id, due_str)).fetchone()
         conn.close()
         return row
+
+    # ---- 微信小程序登录映射（为后期小程序接入预埋，不影响现有 Web 端）----
+    def api_wx_login(self, body):
+        """微信小程序登录：code → openid → 映射/绑定内部用户 → 签发 token。
+        生产态需 system_rules 配置 WX_APPID/WX_SECRET；未配置时进入开发态，允许直接传 openid 联调。"""
+        conn = self._db()
+        cur = conn.cursor()
+        code = (body.get("code") or "").strip()
+        openid = None
+        appid = get_sys_str(conn, "WX_APPID", "")
+        secret = get_sys_str(conn, "WX_SECRET", "")
+        if appid and secret and code:
+            url = ("https://api.weixin.qq.com/sns/jscode2session?appid=" + appid +
+                   "&secret=" + secret + "&js_code=" + urllib.parse.quote(code) +
+                   "&grant_type=authorization_code")
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "park-admin"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode())
+                openid = data.get("openid")
+                if not openid:
+                    conn.close()
+                    return {"error": "微信返回异常：" + str(data.get("errmsg", data))}
+            except Exception as e:
+                conn.close()
+                return {"error": "微信登录校验失败：" + str(e)}
+        else:
+            # 开发态：未配置 appid/secret 时直接传 openid 联调（生产不会走到这里）
+            openid = (body.get("openid") or "").strip()
+        if not openid:
+            conn.close()
+            return {"error": "无法获取微信 openid（请配置 WX_APPID/WX_SECRET，或开发态传 openid）"}
+
+        u = cur.execute("SELECT * FROM users WHERE openid=?", (openid,)).fetchone()
+        if not u:
+            phone = (body.get("phone") or "").strip()
+            if phone:
+                u = cur.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone()
+                if u:
+                    cur.execute("UPDATE users SET openid=? WHERE id=?", (openid, u["id"]))
+                    conn.commit()
+            if not u:
+                conn.close()
+                return {"unbound": True, "openid": openid,
+                        "message": "该微信未绑定园区账号，请用手机号绑定后重试"}
+        token = secrets.token_hex(32)
+        exp = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "INSERT INTO sessions (token,user_id,openid,expires_at,created_at) VALUES (?,?,?,?,?)",
+            (token, u["id"], openid, exp, now()))
+        conn.commit()
+        conn.close()
+        return {"token": token, "user": {"id": u["id"], "name": u["name"], "role": u["role"]}}
+
+    def resolve_token(self, token):
+        """解析登录 token（供后期鉴权中间件复用）。失效/不存在返回 None。"""
+        if not token:
+            return None
+        conn = self._db()
+        cur = conn.cursor()
+        s = cur.execute("SELECT * FROM sessions WHERE token=?", (token,)).fetchone()
+        if not s:
+            conn.close()
+            return None
+        if s["expires_at"] < now():
+            cur.execute("DELETE FROM sessions WHERE token=?", (token,))
+            conn.commit()
+            conn.close()
+            return None
+        u = cur.execute("SELECT id,name,role,openid FROM users WHERE id=?", (s["user_id"],)).fetchone()
+        conn.close()
+        return dict(u) if u else None
+
+    def api_wx_me(self, token):
+        u = self.resolve_token(token)
+        if not u:
+            return {"error": "未登录或登录已过期"}
+        return {"user": u}
 
     def api_list(self, table):
         conn = self._db()
@@ -3208,6 +3325,17 @@ def get_rule(conn, code, default):
         return float(row["value"])
     except (TypeError, ValueError):
         return default
+
+
+def get_sys_str(conn, code, default):
+    """读取系统规则字符串值（如微信小程序 WX_APPID/WX_SECRET）；缺失返回 default。"""
+    try:
+        row = conn.execute("SELECT value FROM system_rules WHERE code=?", (code,)).fetchone()
+    except Exception:
+        return default
+    if not row:
+        return default
+    return row["value"] if row["value"] is not None else default
 
 
 def main():
