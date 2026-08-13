@@ -1015,15 +1015,31 @@ def sync_bill_to_apartment(conn, bill_id):
         pstat = "待缴"
     # 账单状态 -> 公寓费用台账状态
     fee_status = {"已收": "已收", "部分": "已收", "欠费": "待收", "待收": "待收"}.get(b["status"], "待收")
+    # 公寓收费口径：水电账单拆为「水费」「电费」两条（有抄表明细按明细拆分，否则合并为水电）
+    if b["item_type"] == "水电":
+        meter = c.execute("SELECT water_fee, electric_fee FROM meter_reading_records WHERE bill_id=?",
+                          (bill_id,)).fetchone()
+        if meter:
+            wf = float(meter["water_fee"] or 0)
+            ef = float(meter["electric_fee"] or 0)
+            fee_rows = [("水费", wf), ("电费", ef)]
+        else:
+            fee_rows = [("水电", amt)]
+    else:
+        fee_rows = [(b["item_type"], amt)]
+    fee_date = b["due_date"] or (b["created_at"] or now())[:10]
+    c.execute("DELETE FROM apartment_fees WHERE bill_id=?", (bill_id,))
     for r in rentals:
         c.execute("UPDATE apartment_rentals SET payment_status=?, updated_at=? WHERE id=?",
                   (pstat, now(), r["id"]))
-        c.execute("DELETE FROM apartment_fees WHERE bill_id=?", (bill_id,))
-        c.execute(
-            "INSERT INTO apartment_fees (room_id,rental_id,fee_type,amount,fee_date,pay_method,status,operator,note,source,bill_id,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (r["room_id"], r["id"], b["item_type"], amt, b["due_date"] or (b["created_at"] or now())[:10],
-             "", fee_status, "", "中心收费同步", "收费", bill_id, now(), now()))
+        for ftype, famt in fee_rows:
+            if famt <= 0:
+                continue
+            c.execute(
+                "INSERT INTO apartment_fees (room_id,rental_id,fee_type,amount,fee_date,pay_method,status,operator,note,source,bill_id,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (r["room_id"], r["id"], ftype, famt, fee_date,
+                 "", fee_status, "", "中心收费同步", "收费", bill_id, now(), now()))
     conn.commit()
 
 
@@ -1845,6 +1861,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if m.get("bill_id"):
             b = c.execute("SELECT * FROM bills WHERE id=?", (m["bill_id"],)).fetchone()
             if b:
+                sync_bill_to_apartment(conn, m["bill_id"])  # 兼容历史账单：确保公寓收费已同步
+                conn.commit()
                 conn.close()
                 return {"bill_id": m["bill_id"], "already": True, "bill": dict(b)}
         uid = m.get("unit_id")
@@ -1867,6 +1885,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
              period + "-28" if len(period) == 7 else None, 0.0, "待收", now()))
         bill_id = c.lastrowid
         c.execute("UPDATE meter_reading_records SET bill_id=? WHERE id=?", (bill_id, mid))
+        sync_bill_to_apartment(conn, bill_id)  # 方案B：同步写入公寓收费（水费/电费）
         conn.commit()
         row = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
         conn.close()
