@@ -101,6 +101,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { background: #f8fafc; color: var(--muted); font-weight: 600; font-size: 13px; }
+/* 表头锁定：横向/纵向滚动时表头始终可见 */
+.table-wrap thead th { position: sticky; top: 0; z-index: 1; }
 tbody tr:hover { background: #f8fafc; }
 td.wrap, th.wrap { white-space: normal; }
 /* 操作列固定在表格右侧，避免被横向滚动/裁切遮挡 */
