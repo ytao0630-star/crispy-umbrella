@@ -21,7 +21,7 @@ const STAGES = ['线索', '潜在(C类)', '意向(B类)', '成单(A类)', '流�
 const BIZ_TYPES = ['销售', '租赁'];
 let SYS_TAB = 'users';
 let CURRENT_VIEW = 'dashboard';
-const CACHE = { buildings: [], customers: [], units: [], contracts: [] };
+const CACHE = { buildings: [], customers: [], units: [], contracts: [], equipment: [], users: [] };
 
 // ---------- 数据字典（接管各模块下拉；后端 data_dict 表种子，启动时拉取；失败回退内置默认值）----------
 const DICT_DEFAULTS = {
@@ -43,6 +43,11 @@ const DICT_DEFAULTS = {
   workorder_status: ['待派', '处理中', '已完成'],
   asset_type: ['厂房', '公寓'],
   pay_cycle: ['月', '季', '年', '一次性'],
+  inspection_category: ['设备', '消防'],
+  equipment_type: ['电梯', '水泵', '配电柜', '发电机', '空调', '灭火器', '消防栓', '烟感探测器', '喷淋头', '应急照明', '防火门', '消防通道'],
+  inspection_cycle: ['日', '周', '月', '季', '年'],
+  equipment_status: ['正常', '待修', '停用', '报废'],
+  inspection_task_status: ['待巡检', '进行中', '已完成', '逾期'],
 };
 const DICT = Object.assign({}, DICT_DEFAULTS);
 async function loadDict() {
@@ -67,7 +72,7 @@ const PERMS = {
   '系统管理员': 'all',
   '招商专员': ['customers_add', 'contracts_add', 'unit_edit', 'lease_renew', 'lease_terminate', 'factory_view', 'merchants_add', 'merchants_edit', 'merchants_delete'],
   '财务': ['billing_add', 'receipt_add', 'meter_add', 'deposit_add', 'factory_view', 'merchants_add', 'merchants_edit', 'merchants_delete'],
-  '物业': ['workorder_add', 'workorder_edit'],
+  '物业': ['workorder_add', 'workorder_edit', 'inspection_add', 'inspection_edit', 'inspection_delete'],
   '园区领导': ['factory_view'],
 };
 function can(action) {
@@ -141,6 +146,7 @@ function setView(v, sysTab) {
     deposits: renderDeposits,
     merchants: renderMerchants,
     workorders: renderWorkOrders, system: renderSystem, market: renderMarket,
+    equipment: renderEquipment, 'inspection-plans': renderInspectionPlans, 'inspection-tasks': renderInspectionTasks,
   };
   if (map[v]) { $('#view').innerHTML = '<div class="empty">加载中…</div>'; map[v](); }
   window.scrollTo(0, 0);
@@ -153,6 +159,7 @@ function refreshCurrent() {
     deposits: renderDeposits,
     merchants: renderMerchants,
     workorders: renderWorkOrders, system: renderSystem, market: renderMarket,
+    equipment: renderEquipment, 'inspection-plans': renderInspectionPlans, 'inspection-tasks': renderInspectionTasks,
   };
   if (map[CURRENT_VIEW]) map[CURRENT_VIEW]();
 }
@@ -2005,6 +2012,172 @@ window.openWorkOrderModal = function(r = {}) {
   });
 };
 window.assignWorkOrder = function(id) { const r = { id }; openWorkOrderModal(r); };
+
+// ---------- 设备消防巡检（数据底座）----------
+async function renderEquipment() {
+  const rows = await API.get('/api/equipment');
+  CACHE.equipment = rows;
+  $('#view').innerHTML = `
+    <div class="section-title">设备消防台账 <span class="sub">被检对象 · 设备 / 消防器材</span></div>
+    <div class="btn-row">
+      <select id="fCat">${dictOpts('inspection_category', { empty: true }).map(o => `<option value="${o}">${o || '全部类别'}</option>`).join('')}</select>
+      <select id="fStatus">${dictOpts('equipment_status', { empty: true }).map(o => `<option value="${o}">${o || '全部状态'}</option>`).join('')}</select>
+      ${can('inspection_add') ? '<button class="btn" id="addEq">+ 新增设备/器材</button>' : ''}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>编号</th><th>名称</th><th>类别</th><th>类型</th><th>位置</th><th>型号</th><th>安装日期</th><th>下次巡检</th><th>有效期</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="eqTable"></tbody>
+    </table></div>`;
+  function renderList() {
+    const cat = $('#fCat').value, st = $('#fStatus').value;
+    const list = rows.filter(r => (!cat || r.category === cat) && (!st || r.status === st));
+    $('#eqTable').innerHTML = list.map(r => `
+      <tr>
+        <td>${esc(r.code)}</td><td>${esc(r.name)}</td><td>${tag(r.category)}</td><td>${esc(r.type)}</td><td>${esc(r.location || '-')}</td><td>${esc(r.model || '-')}</td>
+        <td>${esc(r.install_date || '-')}</td><td>${esc(r.next_inspect_date || '-')}</td><td>${esc(r.expire_date || '-')}</td><td>${tag(r.status)}</td>
+        <td>${can('inspection_edit') ? `<button class="btn sm ghost" onclick="editEquipment(${r.id})">编辑</button>` : ''}${can('inspection_delete') ? `<button class="btn sm ghost" onclick="delEquipment(${r.id})">删除</button>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="11" class="empty">无记录</td></tr>';
+  }
+  $('#fCat').onchange = renderList; $('#fStatus').onchange = renderList;
+  renderList();
+  if (can('inspection_add')) $('#addEq').onclick = () => openEquipmentModal();
+}
+window.openEquipmentModal = function(r = {}) {
+  const isEdit = !!r.id;
+  openModal(isEdit ? '编辑设备/器材' : '新增设备/器材', `
+    <div class="form-grid">
+      <div class="form-row"><label>编号</label><input id="f_code" value="${esc(r.code || '')}"></div>
+      <div class="form-row"><label>名称</label><input id="f_name" value="${esc(r.name || '')}"></div>
+      <div class="form-row"><label>类别</label><select id="f_category">${sel(dictOpts('inspection_category'), r.category)}</select></div>
+      <div class="form-row"><label>类型</label><select id="f_type">${sel(dictOpts('equipment_type'), r.type)}</select></div>
+      <div class="form-row"><label>位置</label><input id="f_location" value="${esc(r.location || '')}"></div>
+      <div class="form-row"><label>型号</label><input id="f_model" value="${esc(r.model || '')}"></div>
+      <div class="form-row"><label>安装日期</label><input id="f_install" type="date" value="${esc(r.install_date || '')}"></div>
+      <div class="form-row"><label>下次巡检</label><input id="f_next" type="date" value="${esc(r.next_inspect_date || '')}"></div>
+      <div class="form-row"><label>有效期</label><input id="f_expire" type="date" value="${esc(r.expire_date || '')}"></div>
+      <div class="form-row"><label>状态</label><select id="f_status">${sel(dictOpts('equipment_status'), r.status || '正常')}</select></div>
+      <div class="form-row" style="grid-column:1/3"><label>备注</label><textarea id="f_note" rows="2">${esc(r.note || '')}</textarea></div>
+    </div>`, async () => {
+    const body = {
+      code: $('#f_code').value, name: $('#f_name').value, category: $('#f_category').value,
+      type: $('#f_type').value, location: $('#f_location').value, model: $('#f_model').value,
+      install_date: $('#f_install').value || null, next_inspect_date: $('#f_next').value || null,
+      expire_date: $('#f_expire').value || null, status: $('#f_status').value, note: $('#f_note').value || ''
+    };
+    if (isEdit) await API.put('/api/equipment/' + r.id, body);
+    else await API.post('/api/equipment', body);
+    closeModal(); toast(isEdit ? '已更新' : '已新增'); renderEquipment();
+  });
+};
+window.editEquipment = function(id) { const r = CACHE.equipment.find(x => x.id == id); if (r) openEquipmentModal(r); };
+window.delEquipment = async function(id) {
+  if (!confirm('确认删除该设备/器材？')) return;
+  await API.delete('/api/equipment/' + id);
+  toast('已删除'); renderEquipment();
+};
+
+async function renderInspectionPlans() {
+  const [plans, equipment, users] = await Promise.all([API.get('/api/inspection-plans'), API.get('/api/equipment'), API.get('/api/users')]);
+  CACHE.equipment = equipment; CACHE.users = users;
+  const eqMap = {}; equipment.forEach(e => eqMap[e.id] = e.name);
+  const uMap = {}; users.forEach(u => uMap[u.id] = u.name);
+  $('#view').innerHTML = `
+    <div class="section-title">巡检计划 <span class="sub">周期 · 负责人 · 巡检点（设备/器材）</span></div>
+    <div class="btn-row">
+      <select id="fCat">${dictOpts('inspection_category', { empty: true }).map(o => `<option value="${o}">${o || '全部类别'}</option>`).join('')}</select>
+      ${can('inspection_add') ? '<button class="btn" id="addPlan">+ 新增计划</button>' : ''}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>计划名</th><th>类别</th><th>周期</th><th>巡检点</th><th>负责人</th><th>提前提醒</th><th>状态</th><th>下次到期</th><th>操作</th></tr></thead>
+      <tbody id="planTable"></tbody>
+    </table></div>`;
+  function renderList() {
+    const cat = $('#fCat').value;
+    const list = plans.filter(p => !cat || p.category === cat);
+    $('#planTable').innerHTML = list.map(p => {
+      const ids = (p.equipment_ids || '').split(',').filter(Boolean).map(Number);
+      const eqNames = ids.map(i => eqMap[i] || ('#' + i)).join('、') || '-';
+      const on = p.enabled ? '<span class="tag t-green">启用</span>' : '<span class="tag t-gray">停用</span>';
+      return `<tr>
+        <td>${esc(p.name)}</td><td>${tag(p.category)}</td><td>${esc(p.cycle)}</td>
+        <td>${esc(eqNames)}</td><td>${esc(p.assignee_id ? (uMap[p.assignee_id] || '#' + p.assignee_id) : '-')}</td>
+        <td>${p.lead_days ? p.lead_days + ' 天' : '-'}</td><td>${on}</td><td>${esc(p.next_due_date || '-')}</td>
+        <td>${can('inspection_edit') ? `<button class="btn sm ghost" onclick="editPlan(${p.id})">编辑</button>` : ''}${can('inspection_edit') ? `<button class="btn sm ghost" onclick="genPlan(${p.id})">生成</button>` : ''}${can('inspection_delete') ? `<button class="btn sm ghost" onclick="delPlan(${p.id})">删除</button>` : ''}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9" class="empty">无记录</td></tr>';
+  }
+  $('#fCat').onchange = renderList;
+  renderList();
+  if (can('inspection_add')) $('#addPlan').onclick = () => openPlanModal();
+  window.genPlan = async function(id) {
+    await API.post('/api/inspection-plans/' + id + '/generate', {});
+    toast('已生成下一期任务'); renderInspectionPlans();
+  };
+  window.delPlan = async function(id) {
+    if (!confirm('确认删除该计划？其下巡检任务将一并删除。')) return;
+    await API.delete('/api/inspection-plans/' + id);
+    toast('已删除'); renderInspectionPlans();
+  };
+}
+window.openPlanModal = function(p = {}) {
+  const isEdit = !!p.id;
+  const equipment = CACHE.equipment || [];
+  const checked = new Set((p.equipment_ids || '').split(',').filter(Boolean).map(Number));
+  const eqChecks = equipment.length
+    ? equipment.map(e => `<label class="chk"><input type="checkbox" value="${e.id}" ${checked.has(e.id) ? 'checked' : ''}> ${esc(e.name)}（${esc(e.category)}）</label>`).join('')
+    : '<span class="muted">暂无设备，请先在「设备台账」添加</span>';
+  openModal(isEdit ? '编辑巡检计划' : '新增巡检计划', `
+    <div class="form-grid">
+      <div class="form-row"><label>计划名</label><input id="f_name" value="${esc(p.name || '')}"></div>
+      <div class="form-row"><label>类别</label><select id="f_category">${sel(dictOpts('inspection_category'), p.category)}</select></div>
+      <div class="form-row"><label>周期</label><select id="f_cycle">${sel(dictOpts('inspection_cycle'), p.cycle || '月')}</select></div>
+      <div class="form-row"><label>提前提醒</label><input id="f_lead" type="number" min="0" value="${p.lead_days || 0}"></div>
+      <div class="form-row"><label>启用</label><select id="f_enabled">${sel(['1', '0'], String(p.enabled ?? 1))}</select></div>
+      <div class="form-row"><label>负责人</label><select id="f_assignee"><option value="">未指定</option>${(CACHE.users || []).map(u => `<option value="${u.id}" ${String(p.assignee_id) === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-row" style="grid-column:1/3"><label>巡检点（设备/器材）</label><div class="chk-group">${eqChecks}</div></div>
+    <div class="form-row" style="grid-column:1/3"><label>下次到期</label><input id="f_next" type="date" value="${esc(p.next_due_date || '')}"></div>
+  `, async () => {
+    const ids = $$('#modalBody input[type=checkbox]:checked').map(c => c.value);
+    const body = {
+      name: $('#f_name').value, category: $('#f_category').value, cycle: $('#f_cycle').value,
+      lead_days: +$('#f_lead').value || 0, enabled: +$('#f_enabled').value,
+      assignee_id: $('#f_assignee').value ? +$('#f_assignee').value : null,
+      equipment_ids: ids.join(','), next_due_date: $('#f_next').value || today()
+    };
+    if (isEdit) await API.put('/api/inspection-plans/' + p.id, body);
+    else await API.post('/api/inspection-plans', body);
+    closeModal(); toast(isEdit ? '已更新' : '已新增'); renderInspectionPlans();
+  });
+};
+window.editPlan = function(id) { API.get('/api/inspection-plans').then(rows => { const x = rows.find(r => r.id == id); if (x) openPlanModal(x); }); };
+
+async function renderInspectionTasks() {
+  const [tasks, users] = await Promise.all([API.get('/api/inspection-tasks'), API.get('/api/users')]);
+  const uMap = {}; users.forEach(u => uMap[u.id] = u.name);
+  $('#view').innerHTML = `
+    <div class="section-title">巡检任务 <span class="sub">按计划生成 · 逾期标红</span></div>
+    <div class="btn-row">
+      <select id="fStatus">${dictOpts('inspection_task_status', { empty: true }).map(o => `<option value="${o}">${o || '全部状态'}</option>`).join('')}</select>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>任务号</th><th>计划</th><th>类别</th><th>到期日</th><th>状态</th><th>巡检员</th><th>生成时间</th></tr></thead>
+      <tbody id="taskTable"></tbody>
+    </table></div>`;
+  function renderList() {
+    const st = $('#fStatus').value;
+    const list = tasks.filter(t => !st || (st === '逾期' ? t.overdue : t.status === st));
+    $('#taskTable').innerHTML = list.map(t => `
+      <tr>
+        <td>${esc(t.code)}</td><td>${esc(t.plan_name || '-')}</td><td>${tag(t.category)}</td>
+        <td>${esc(t.due_date)}${t.overdue ? ' <span class="tag t-red">逾期</span>' : ''}</td>
+        <td>${tag(t.status)}</td><td>${esc(t.inspector_id ? (uMap[t.inspector_id] || '#' + t.inspector_id) : '-')}</td>
+        <td>${esc(t.generated_at || '-')}</td>
+      </tr>`).join('') || '<tr><td colspan="7" class="empty">无记录</td></tr>';
+  }
+  $('#fStatus').onchange = renderList;
+  renderList();
+}
 
 // ---------- 系统管理 ----------
 async function renderSystem() {

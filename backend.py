@@ -135,6 +135,25 @@ def init_db():
         description TEXT, assignee TEXT, status TEXT,
         created_at TEXT, completed_at TEXT, rating INTEGER
     );
+    CREATE TABLE IF NOT EXISTS equipment (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT, name TEXT, category TEXT, type TEXT,
+        location TEXT, model TEXT, manufacturer TEXT,
+        install_date TEXT, next_inspect_date TEXT, expire_date TEXT,
+        status TEXT DEFAULT '正常', note TEXT, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS inspection_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT, category TEXT, cycle TEXT,
+        equipment_ids TEXT, assignee_id INTEGER, lead_days INTEGER DEFAULT 0,
+        enabled INTEGER DEFAULT 1, next_due_date TEXT, created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS inspection_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT, plan_id INTEGER, category TEXT,
+        due_date TEXT, status TEXT DEFAULT '待巡检',
+        inspector_id INTEGER, generated_at TEXT, finished_at TEXT, created_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT, username TEXT, password TEXT, phone TEXT, email TEXT,
@@ -1300,6 +1319,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_meter_units(q("biz")))
         if path == "/api/work-orders":
             return self._send_json(self.api_work_orders(q("status")))
+        # 物业服务 - 设备消防巡检（数据底座）
+        if path == "/api/equipment":
+            return self._send_json(self.api_list("equipment"))
+        if path == "/api/inspection-plans":
+            return self._send_json(self.api_list("inspection_plans"))
+        if path == "/api/inspection-tasks":
+            return self._send_json(self.api_inspection_tasks(q("status")))
         if path == "/api/roles":
             return self._send_json(ROLES)
         if path == "/api/leases":
@@ -1407,6 +1433,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_save_meter_record(body, None), 201)
         if path == "/api/work-orders":
             return self._send_json(self.api_insert("work_orders", body), 201)
+        # 物业服务 - 设备消防巡检（数据底座）
+        if path == "/api/equipment":
+            return self._send_json(self.api_insert("equipment", body), 201)
+        if path == "/api/inspection-plans":
+            return self._send_json(self.api_insert("inspection_plans", body), 201)
+        if re.match(r"^/api/inspection-plans/\d+/generate$", path):
+            pid = int(path.split("/")[-2])
+            return self._send_json(self.api_generate_plan(pid), 201)
         if path == "/api/reset":
             init_db()
             return self._send_json({"ok": True})
@@ -1503,6 +1537,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/work-orders/"):
             wid = path.split("/")[-1]
             return self._send_json(self.api_update("work_orders", wid, body))
+        # 物业服务 - 设备消防巡检（数据底座）
+        if path.startswith("/api/equipment/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_update("equipment", rid, body))
+        if path.startswith("/api/inspection-plans/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_update("inspection_plans", rid, body))
+        if path.startswith("/api/inspection-tasks/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_update("inspection_tasks", rid, body))
         if path.startswith("/api/apartment-records/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_update_apartment(rid, body))
@@ -1582,9 +1626,106 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/crm-plans/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_delete("crm_plans", rid))
+        # 物业服务 - 设备消防巡检（数据底座）
+        if path.startswith("/api/equipment/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_delete("equipment", rid))
+        if path.startswith("/api/inspection-tasks/"):
+            rid = path.split("/")[-1]
+            return self._send_json(self.api_delete("inspection_tasks", rid))
+        if path.startswith("/api/inspection-plans/"):
+            rid = path.split("/")[-1]
+            conn = self._db()
+            cur = conn.cursor()
+            if self._is_audit("inspection_plans"):
+                self._audit(conn, "删除", "巡检计划", f"删除巡检计划#{rid}", getattr(self, "_audit_user", None))
+            cur.execute("DELETE FROM inspection_tasks WHERE plan_id=?", (rid,))
+            cur.execute("DELETE FROM inspection_plans WHERE id=?", (rid,))
+            conn.commit()
+            conn.close()
+            return self._send_json({"ok": True})
         return self._send_json({"error": "not found"}, 404)
 
     # ---- API 实现 ----
+    def _gen_inspection_tasks(self, conn, today_str):
+        """惰性生成：为每个启用计划补齐截至今天尚未生成的巡检任务（无定时框架，打开任务页时触发）。"""
+        cur = conn.cursor()
+        cyc = {"日": 1, "周": 7, "月": 30, "季": 90, "年": 365}
+        plans = cur.execute("SELECT * FROM inspection_plans WHERE enabled=1").fetchall()
+        for p in plans:
+            nd = p["next_due_date"] or today_str
+            try:
+                d = datetime.date.fromisoformat(nd)
+            except Exception:
+                d = datetime.date.fromisoformat(today_str)
+            t = datetime.date.fromisoformat(today_str)
+            step = cyc.get(p["cycle"], 30)
+            guard = 0
+            while d <= t and guard < 200:
+                due_str = d.isoformat()
+                exists = cur.execute(
+                    "SELECT 1 FROM inspection_tasks WHERE plan_id=? AND due_date=?",
+                    (p["id"], due_str)).fetchone()
+                if not exists:
+                    code = "XJ-" + due_str.replace("-", "") + "-" + str(p["id"]).zfill(3)
+                    cur.execute(
+                        "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,generated_at) VALUES (?,?,?,?,?,?)",
+                        (code, p["id"], p["category"], due_str, "待巡检", now()))
+                d = d + datetime.timedelta(days=step)
+                guard += 1
+            cur.execute("UPDATE inspection_plans SET next_due_date=? WHERE id=?",
+                        (d.isoformat(), p["id"]))
+        conn.commit()
+
+    def api_inspection_tasks(self, status=None):
+        conn = self._db()
+        self._gen_inspection_tasks(conn, today())
+        cur = conn.cursor()
+        sql = ("SELECT t.*, p.name AS plan_name FROM inspection_tasks t "
+               "LEFT JOIN inspection_plans p ON t.plan_id=p.id ORDER BY t.due_date DESC")
+        rows = cur.execute(sql).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            due = d.get("due_date") or ""
+            d["overdue"] = (d.get("status") in ("待巡检", "进行中")) and bool(due) and due < today()
+            out.append(d)
+        conn.close()
+        return out
+
+    def api_generate_plan(self, plan_id):
+        """手动立即生成：为指定计划创建下一期巡检任务并推进 next_due_date。"""
+        conn = self._db()
+        cur = conn.cursor()
+        p = cur.execute("SELECT * FROM inspection_plans WHERE id=?", (plan_id,)).fetchone()
+        if not p:
+            conn.close()
+            return {"error": "计划不存在"}
+        cyc = {"日": 1, "周": 7, "月": 30, "季": 90, "年": 365}
+        nd = p["next_due_date"] or today()
+        try:
+            d = datetime.date.fromisoformat(nd)
+        except Exception:
+            d = datetime.date.today()
+        due_str = d.isoformat()
+        exists = cur.execute(
+            "SELECT 1 FROM inspection_tasks WHERE plan_id=? AND due_date=?",
+            (plan_id, due_str)).fetchone()
+        if not exists:
+            code = "XJ-" + due_str.replace("-", "") + "-" + str(plan_id).zfill(3)
+            cur.execute(
+                "INSERT INTO inspection_tasks (code,plan_id,category,due_date,status,generated_at) VALUES (?,?,?,?,?,?)",
+                (code, plan_id, p["category"], due_str, "待巡检", now()))
+            self._audit(conn, "生成", "巡检任务", f"手动生成巡检任务 {code}（计划 {p['name']}）", None)
+        nd2 = (d + datetime.timedelta(days=cyc.get(p["cycle"], 30))).isoformat()
+        cur.execute("UPDATE inspection_plans SET next_due_date=? WHERE id=?", (nd2, plan_id))
+        conn.commit()
+        row = cur.execute(
+            "SELECT t.*, p.name AS plan_name FROM inspection_tasks t LEFT JOIN inspection_plans p ON t.plan_id=p.id WHERE t.plan_id=? AND t.due_date=?",
+            (plan_id, due_str)).fetchone()
+        conn.close()
+        return row
+
     def api_list(self, table):
         conn = self._db()
         rows = conn.execute(f"SELECT * FROM {table} ORDER BY id DESC").fetchall()
@@ -1606,7 +1747,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _is_audit(self, table):
         """业务写操作审计白名单（系统配置表不审计）。"""
         return table in ("contracts", "bills", "deposits", "work_orders", "customers",
-                         "units", "apartment_fees", "meters", "merchants", "receipts")
+                         "units", "apartment_fees", "meters", "merchants", "receipts",
+                         "equipment", "inspection_plans", "inspection_tasks")
 
     def api_insert(self, table, body):
         conn = self._db()
@@ -3098,6 +3240,11 @@ def ensure_data_dict(conn):
         "workorder_status": ["待派", "处理中", "已完成"],
         "asset_type": ["厂房", "公寓"],
         "pay_cycle": ["月", "季", "年", "一次性"],
+        "inspection_category": ["设备", "消防"],
+        "equipment_type": ["电梯", "水泵", "配电柜", "发电机", "空调", "灭火器", "消防栓", "烟感探测器", "喷淋头", "应急照明", "防火门", "消防通道"],
+        "inspection_cycle": ["日", "周", "月", "季", "年"],
+        "equipment_status": ["正常", "待修", "停用", "报废"],
+        "inspection_task_status": ["待巡检", "进行中", "已完成", "逾期"],
     }
     cur = conn.cursor()
     for t, names in seed.items():

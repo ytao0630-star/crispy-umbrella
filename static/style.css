@@ -232,6 +232,10 @@ table.mini th { background: #eef2f8; color: var(--muted); font-weight: 600; }
 .ctrl-table .muted { color: var(--muted); }
 .plan-edit input { width: 90px; }
 .muted { color: var(--muted); }
+/* 巡检点（设备/器材）多选 */
+.chk-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 14px; margin-top: 4px; max-height: 220px; overflow: auto; }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 1.6; }
+.chk input { width: auto; margin: 0; }
 
 /* 市场调研下钻详情 */
 .modal.wide { max-width: 760px; }
