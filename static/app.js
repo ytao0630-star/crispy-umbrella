@@ -12,6 +12,9 @@ const API = {
 };
 
 let ROLE = '系统管理员';
+// 合同模块总开关：当前业务不需要合同，置 false 隐藏入口并解耦押金自动收押/退押；
+// 后期需恢复合同，把此处改为 true 并取消 index.html 中合同导航的注释即可。
+const CONTRACTS_ENABLED = false;
 const ROLES = ['系统管理员', '招商专员', '财务', '物业', '园区领导'];
 // 客户漏斗分级（对齐《月度执行管控》Excel：线索→C类潜在→B类意向(到访)→A类成单）
 const STAGES = ['线索', '潜在(C类)', '意向(B类)', '成单(A类)', '流失'];
@@ -777,10 +780,10 @@ async function _renderFactory(kind) {
       const isSale = ct.type === '销售';
       let ops = '';
       if (can('unit_edit')) ops += `<button class="btn sm ghost" onclick="editUnit(${u.id})">编辑</button> `;
-      if (u.status === '空置' && can('contracts_add')) {
+      if (CONTRACTS_ENABLED && u.status === '空置' && can('contracts_add')) {
         ops += `<button class="btn sm ghost" onclick="openContractModal(${u.id},'${isRental?'租赁':'销售'}')">${isRental?'租赁':'销售'}</button> `;
       }
-      if (isRental && isLease && ct.status === '生效' && can('lease_terminate')) {
+      if (CONTRACTS_ENABLED && isRental && isLease && ct.status === '生效' && can('lease_terminate')) {
         ops += `<button class="btn sm red" onclick="terminateContract(${ct.id})">退租结算</button> `;
       }
       if (can('contracts_add')) ops += `<button class="btn sm ghost" onclick="openUnitRecords(${u.id})">单位记录</button>`;
