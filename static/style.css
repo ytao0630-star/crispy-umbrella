@@ -97,12 +97,16 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p
 .panel h3 { font-size: 15px; margin-bottom: 12px; }
 
 /* 表格 */
-.table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { background: #f8fafc; color: var(--muted); font-weight: 600; font-size: 13px; }
 tbody tr:hover { background: #f8fafc; }
 td.wrap, th.wrap { white-space: normal; }
+/* 操作列固定在表格右侧，避免被横向滚动/裁切遮挡 */
+.table-wrap th.ops, .table-wrap td.ops { position: sticky; right: 0; background: var(--panel); z-index: 2; box-shadow: -8px 0 12px -6px rgba(0,0,0,.08); }
+.table-wrap thead th.ops { background: #f8fafc; z-index: 3; }
+.table-wrap tbody tr:hover td.ops { background: #f1f5f9; }
 
 /* 标签 */
 .tag { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }

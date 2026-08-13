@@ -289,7 +289,7 @@ async function renderLeases() {
           <th>房号</th><th>楼层</th><th>类别</th><th>方位</th><th>当前状态</th>
           <th>现租户</th><th>企业</th><th>入驻</th><th>退房</th>
           <th>押金</th><th>月租</th><th>缴费</th><th>电表号</th><th>房卡</th><th>密码</th><th>指纹</th>
-          ${can('unit_edit') ? '<th>操作</th>' : ''}
+          ${can('unit_edit') ? '<th class="ops">操作</th>' : ''}
         </tr></thead>
         <tbody id="aptTable"></tbody>
       </table></div>`;
@@ -326,7 +326,7 @@ async function renderLeases() {
         <td>${esc(cur.check_in_date || '-')}</td><td>${esc(cur.check_out_date || '-')}</td>
         <td>${yuan(cur.deposit || 0)}</td><td>${yuan(cur.monthly_rent || 0)}</td><td>${tag(cur.payment_status || '-')}</td>
         <td>${esc(r.meter_no || '-')}</td><td>${esc(cur.key_card || '-')}</td><td>${cur.room_password ? '<span class="pwd-mask" title="仅编辑/详情可见">******</span>' : '-'}</td><td>${esc(cur.fingerprint || '-')}</td>
-        ${can('unit_edit') ? `<td>
+        ${can('unit_edit') ? `<td class="ops">
           <button class="btn sm ghost" onclick="openRoomFeeModal(${r.id})">收费</button>
           <button class="btn sm ghost" onclick="openRoomHistory(${r.id})">出租记录</button>
           <button class="btn sm ghost" onclick="openRoomModal(${r.id})">编辑房</button>
