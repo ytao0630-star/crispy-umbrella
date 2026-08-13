@@ -13,6 +13,7 @@ import json
 import os
 import datetime
 import urllib.parse
+import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "park.db")
@@ -569,6 +570,8 @@ def _ensure_apartment_sync_columns(conn):
         "ALTER TABLE apartment_rooms ADD COLUMN key_card TEXT",
         "ALTER TABLE apartment_rooms ADD COLUMN room_password TEXT",
         "ALTER TABLE apartment_rooms ADD COLUMN fingerprint TEXT",
+        # 抄表记录 → 收费账单 联动关联
+        "ALTER TABLE meter_reading_records ADD COLUMN bill_id INTEGER",
     ):
         try:
             c.execute(sql)
@@ -1316,6 +1319,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_insert("channels", body), 201)
         if path == "/api/crm-plans":
             return self._send_json(self.api_insert("crm_plans", body), 201)
+        # 水电抄表 → 收费账单 联动
+        if re.match(r"^/api/meter-records/\d+/bill$", path):
+            mid = path.split("/")[-2]
+            return self._send_json(self.api_meter_to_bill(int(mid)), 201)
         return self._send_json({"error": "not found"}, 404)
 
     def do_PUT(self):
@@ -1823,6 +1830,47 @@ class Handler(http.server.BaseHTTPRequestHandler):
         row = c.execute("SELECT * FROM meter_reading_records WHERE id=?", (new_id,)).fetchone()
         conn.close()
         return row
+
+    def api_meter_to_bill(self, mid):
+        """水电抄表 → 收费账单 联动：为一条抄表记录生成（或返回已有）一笔『水电』账单，
+        挂到该单元当前生效合同/客户上，并回填 meter_reading_records.bill_id。
+        计费金额 = 抄表 total_fee，周期 = 抄表 bill_month。"""
+        conn = self._db()
+        c = conn.cursor()
+        m = c.execute("SELECT * FROM meter_reading_records WHERE id=?", (mid,)).fetchone()
+        if not m:
+            conn.close(); return {"error": "抄表记录不存在"}
+        m = dict(m)
+        # 已生成过账单
+        if m.get("bill_id"):
+            b = c.execute("SELECT * FROM bills WHERE id=?", (m["bill_id"],)).fetchone()
+            if b:
+                conn.close()
+                return {"bill_id": m["bill_id"], "already": True, "bill": dict(b)}
+        uid = m.get("unit_id")
+        if not uid:
+            conn.close(); return {"error": "该抄表记录未关联资产单元，无法生成账单"}
+        u = c.execute("SELECT id,code,current_contract_id,current_customer_id FROM units WHERE id=?", (uid,)).fetchone()
+        if not u:
+            conn.close(); return {"error": "关联单元不存在"}
+        u = dict(u)
+        contract_id = u.get("current_contract_id")
+        customer_id = u.get("current_customer_id")
+        if not customer_id:
+            conn.close(); return {"error": f"单元 {u.get('code')} 当前无关联客户，无法生成账单（请先维护租赁合同/客户）"}
+        amount = float(m.get("total_fee") or 0)
+        period = m.get("bill_month") or (m.get("reading_date") or today())[:7]
+        c.execute(
+            "INSERT INTO bills (contract_id,unit_id,customer_id,item_type,period,amount,due_date,paid_amount,status,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (contract_id, uid, customer_id, "水电", period, amount,
+             period + "-28" if len(period) == 7 else None, 0.0, "待收", now()))
+        bill_id = c.lastrowid
+        c.execute("UPDATE meter_reading_records SET bill_id=? WHERE id=?", (bill_id, mid))
+        conn.commit()
+        row = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+        conn.close()
+        return {"bill_id": bill_id, "already": False, "bill": dict(row) if row else None}
 
     def api_meter_units(self, biz=None):
         """水电抄表「应抄表单元」：以资产台账中签约生效的合同单元为基准，

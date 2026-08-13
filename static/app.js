@@ -1377,7 +1377,7 @@ async function renderMeter() {
           <th>抄表编号</th><th>关联铺位</th><th>关联租户</th><th>抄表日期</th><th>费用周期</th>
           <th>水·上期</th><th>水·本期</th><th>水·单价</th><th>水·费用</th>
           <th>电·上期</th><th>电·本期</th><th>电·单价</th><th>电·费用</th>
-          <th>合计</th><th>操作</th>
+          <th>合计</th><th>账单</th><th>操作</th>
         </tr></thead>
         <tbody id="mTable"></tbody>
       </table></div>
@@ -1395,7 +1395,7 @@ async function renderMeter() {
       Object.keys(groups).forEach(g => {
         const gRows = groups[g];
         const gW = sum(gRows, 'water_fee'), gE = sum(gRows, 'electric_fee');
-        html += `<tr class="grp"><td colspan="16">🏢 ${esc(g)} <span class="grp-sum">水费 ${yuan(gW)} · 电费 ${yuan(gE)} · 合计 ${yuan(gW + gE)}</span></td></tr>`;
+        html += `<tr class="grp"><td colspan="17">🏢 ${esc(g)} <span class="grp-sum">水费 ${yuan(gW)} · 电费 ${yuan(gE)} · 合计 ${yuan(gW + gE)}</span></td></tr>`;
         html += gRows.map(r => `<tr data-id="${r.id}">
           <td><input type="checkbox" class="mchk" value="${r.id}"></td>
           <td>${esc(r.meter_no)}</td><td>${esc(r.unit_code || '-')}</td><td>${esc(r.tenant_name || '-')}</td>
@@ -1403,10 +1403,11 @@ async function renderMeter() {
           <td>${fmt(r.water_prev)}</td><td>${fmt(r.water_curr)}</td><td>${fmt(r.water_price)}</td><td>${yuan(r.water_fee)}</td>
           <td>${fmt(r.electric_prev)}</td><td>${fmt(r.electric_curr)}</td><td>${fmt(r.electric_price)}</td><td>${yuan(r.electric_fee)}</td>
           <td>${yuan(r.total_fee)}</td>
+          <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="genMeterBill(${r.id})">${r.bill_id ? '查看账单' : '生成账单'}</button>` : (r.bill_id ? '已出账' : '-')}</td>
           <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="editMeter(${r.id})">编辑</button> ` : ''}<button class="btn sm ghost" onclick="delMeter(${r.id})">删除</button></td>
         </tr>`).join('');
       });
-      $('#mTable').innerHTML = html || '<tr><td colspan="16" class="empty">无记录</td></tr>';
+      $('#mTable').innerHTML = html || '<tr><td colspan="17" class="empty">无记录</td></tr>';
       $('#mAll').onchange = () => { $$('.mchk').forEach(c => c.checked = $('#mAll').checked); };
     }
     $('#mSearch').oninput = renderList;
@@ -1548,14 +1549,29 @@ window.meterBlockHtml = function (unitId) {
     <td>${esc(r.meter_no)}</td><td>${esc(r.bill_month)}</td>
     <td>${fmt(r.water_usage)} 吨</td><td>${yuan(r.water_fee)}</td>
     <td>${fmt(r.electric_usage)} 度</td><td>${yuan(r.electric_fee)}</td>
-    <td>${yuan(r.total_fee)}</td></tr>`).join('');
+    <td>${yuan(r.total_fee)}</td>
+    <td>${can('meter_add') ? `<button class="btn sm ghost" onclick="genMeterBill(${r.id})">${r.bill_id ? '查看账单' : '生成账单'}</button>` : (r.bill_id ? '已出账' : '-')}</td>
+  </tr>`).join('');
   return `<div class="meter-embed">
     <div class="embed-title">💧 水电抄表（${rows.length} 笔）｜ 水费 ${yuan(sum('water_fee'))} · 电费 ${yuan(sum('electric_fee'))} · 合计 ${yuan(sum('total_fee'))}</div>
     <div class="table-wrap"><table class="embed-table">
-      <thead><tr><th>编号</th><th>周期</th><th>用水量</th><th>水费</th><th>用电量</th><th>电费</th><th>合计</th></tr></thead>
+      <thead><tr><th>编号</th><th>周期</th><th>用水量</th><th>水费</th><th>用电量</th><th>电费</th><th>合计</th><th>账单</th></tr></thead>
       <tbody>${body}</tbody>
     </table></div>
   </div>`;
+};
+// 抄表 → 收费账单 联动：生成/查看该抄表记录的『水电』账单
+window.genMeterBill = async function (id) {
+  try {
+    const res = await API.post(`/api/meter-records/${id}/bill`, {});
+    if (res.error) { toast(res.error, 'err'); return; }
+    if (res.already) toast(`该抄表已出账（账单 #${res.bill_id}）`, 'info');
+    else toast(`已生成水电账单 #${res.bill_id}，金额 ${yuan(res.bill.amount)}`, 'ok');
+    // 刷新当前视图（若在账单模块，刷新账单列表）
+    if (location.hash === '#bills' || (window.currentView === 'bills')) { if (window.renderBills) window.renderBills(); }
+    else if (window.activeView && window.activeView === 'meter') { if (window.renderMeter) window.renderMeter(); }
+    else if (window.renderMeter) window.renderMeter();
+  } catch (e) { toast('生成账单失败：' + e.message, 'err'); }
 };
 // 以指定单元打开抄表弹窗（自动带出铺位与租户）
 window.openMeterModalForUnit = function (unitId) {
