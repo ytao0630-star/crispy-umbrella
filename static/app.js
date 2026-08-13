@@ -6,9 +6,9 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const API = {
   get: (p) => fetch(p).then(r => r.json()),
-  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => r.json()),
-  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => r.json()),
-  delete: (p) => fetch(p, { method: 'DELETE' }).then(r => r.json()),
+  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(b || {}), operator: (typeof ROLE !== 'undefined' ? ROLE : '系统') }) }).then(r => r.json()),
+  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(b || {}), operator: (typeof ROLE !== 'undefined' ? ROLE : '系统') }) }).then(r => r.json()),
+  delete: (p) => fetch(p + (p.includes('?') ? '&' : '?') + 'operator=' + encodeURIComponent(typeof ROLE !== 'undefined' ? ROLE : '系统'), { method: 'DELETE' }).then(r => r.json()),
 };
 
 let ROLE = '系统管理员';

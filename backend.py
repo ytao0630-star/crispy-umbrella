@@ -1516,6 +1516,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        self._audit_user = urllib.parse.parse_qs(parsed.query).get("operator", [None])[0]
         if path.startswith("/api/market-research/"):
             rid = path.split("/")[-1]
             return self._send_json(self.api_delete("market_research", rid))
@@ -1564,15 +1565,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conn.close()
         return rows
 
+    def _audit(self, conn, action, module, detail, user=None):
+        """统一审计埋点：业务写操作后调用，落 audit_logs（操作留痕可追溯）。"""
+        u = user or "系统"
+        ip = ""
+        try:
+            ip = self.client_address[0]
+        except Exception:
+            ip = ""
+        conn.execute(
+            "INSERT INTO audit_logs (user,action,module,detail,ip,created_at) VALUES (?,?,?,?,?,?)",
+            (u, action, module, str(detail)[:500], ip, now()))
+
+    def _is_audit(self, table):
+        """业务写操作审计白名单（系统配置表不审计）。"""
+        return table in ("contracts", "bills", "deposits", "work_orders", "customers",
+                         "units", "apartment_fees", "meters", "merchants", "receipts")
+
     def api_insert(self, table, body):
         conn = self._db()
         c = conn.cursor()
-        cols = [k for k in body if k != "id"]
+        cols = [k for k in body if k not in ("id", "operator")]
         vals = [body[k] for k in cols]
         ph = ",".join("?" * len(cols))
         c.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({ph})", vals)
-        conn.commit()
         new_id = c.lastrowid
+        if self._is_audit(table):
+            self._audit(conn, "新增", table, f"新增{table}记录#{new_id}", body.get("operator"))
+        conn.commit()
         row = c.execute(f"SELECT * FROM {table} WHERE id=?", (new_id,)).fetchone()
         conn.close()
         return row
@@ -1580,10 +1600,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_update(self, table, rid, body):
         conn = self._db()
         c = conn.cursor()
-        cols = [k for k in body if k != "id"]
+        cols = [k for k in body if k not in ("id", "operator")]
         sets = ",".join(f"{k}=?" for k in cols)
         vals = [body[k] for k in cols] + [rid]
         c.execute(f"UPDATE {table} SET {sets} WHERE id=?", vals)
+        if self._is_audit(table):
+            self._audit(conn, "更新", table, f"更新{table}#{rid}", body.get("operator"))
         conn.commit()
         row = c.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
         conn.close()
@@ -1592,6 +1614,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_delete(self, table, rid):
         conn = self._db()
         c = conn.cursor()
+        if self._is_audit(table):
+            self._audit(conn, "删除", table, f"删除{table}#{rid}", getattr(self, "_audit_user", None))
         c.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
         conn.commit()
         conn.close()
@@ -1601,7 +1625,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conn = self._db()
         c = conn.cursor()
         cur = c.execute("SELECT stage FROM customers WHERE id=?", (rid,)).fetchone()
-        cols = [k for k in body if k != "id"]
+        cols = [k for k in body if k not in ("id", "operator")]
         sets = ",".join(f"{k}=?" for k in cols)
         vals = [body[k] for k in cols] + [rid]
         c.execute(f"UPDATE customers SET {sets} WHERE id=?", vals)
@@ -1851,7 +1875,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_insert_contract(self, body):
         conn = self._db()
         c = conn.cursor()
-        cols = [k for k in body if k != "id"]
+        cols = [k for k in body if k not in ("id", "operator")]
         vals = [body[k] for k in cols]
         ph = ",".join("?" * len(cols))
         c.execute(f"INSERT INTO contracts ({','.join(cols)}) VALUES ({ph})", vals)
@@ -1880,6 +1904,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (new_id, ct["unit_id"], ct["customer_id"], float(dep), "收",
                  ct.get("sign_date") or today(), "待收缴", "签约自动收取"))
+            self._audit(conn, "新增", "押金", f"签约自动收押 ¥{float(dep)}（合同 {ct.get('code')}）", body.get("operator"))
+        self._audit(conn, "新增", "合同", f"新增{ct['type']}合同 {ct.get('code')}", body.get("operator"))
         conn.commit()
         conn.close()
         return ct
@@ -1900,6 +1926,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             (body["unit_id"], body["meter_type"], body["prev_reading"], body["curr_reading"], usage,
              body.get("bill_month"), None))
         mid = c.lastrowid
+        self._audit(conn, "抄表", "水电抄表", f"录入{body.get('meter_type')}表 单元{body.get('unit_id')} 用量{usage}", body.get("operator"))
         # 生成/累计水电账单
         if contract:
             cust = contract["customer_id"]
@@ -2105,6 +2132,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         b = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
         new_paid = (b["paid_amount"] or 0) + amt
         c.execute("UPDATE bills SET paid_amount=? WHERE id=?", (new_paid, bill_id))
+        self._audit(conn, "收款", "收费", f"账单#{bill_id} 收款 ¥{amt}", body.get("operator"))
         conn.commit()
         recompute_bill_status(bill_id, conn)
         sync_bill_to_apartment(conn, bill_id)
@@ -2755,6 +2783,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "VALUES (?,?,?,?,?,?,?,?)",
                         (cid, ct["unit_id"], ct["customer_id"], refund_amt, "退", today(),
                          "待退款", "退租自动退还（原已收押金）"))
+                    self._audit(conn, "新增", "押金", f"退租自动退押 ¥{refund_amt}（合同 {ct.get('code')}）", body.get("operator"))
                     deposit_status = "待退"
                 else:
                     deposit_status = "无押"
@@ -2785,6 +2814,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "INSERT INTO bills (contract_id,unit_id,customer_id,item_type,period,amount,due_date,paid_amount,status,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (cid, ct["unit_id"], ct["customer_id"], "水电", move_out[:7], float(final_util), due, 0, "待收", now()))
+        self._audit(conn, "退租", "合同", f"合同 {ct.get('code')} 退租（押金处理：{deposit_status}）", body.get("operator"))
         conn.commit()
         row = c.execute("SELECT * FROM contracts WHERE id=?", (cid,)).fetchone()
         conn.close()
