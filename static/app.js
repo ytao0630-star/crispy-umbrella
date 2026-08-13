@@ -1874,13 +1874,25 @@ async function renderDeposits() {
       <div class="kpi purple"><div class="label">在押余额</div><div class="value">${yuan(held)}</div></div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>房间号</th><th>合同</th><th>客户</th><th>类型</th><th>金额</th><th>状态</th><th>日期</th><th>备注</th></tr></thead>
+      <thead><tr><th>房间号</th><th>合同</th><th>客户</th><th>类型</th><th>金额</th><th>状态</th><th>日期</th><th>备注</th><th class="ops">操作</th></tr></thead>
       <tbody id="depTable"></tbody>
     </table></div>`;
   $('#depTable').innerHTML = deposits.map(d => `
-    <tr><td>${esc(d.unit_code || uname(d.unit_id))}</td><td>${esc(ccode(d.contract_id))}</td><td>${esc(cname(d.customer_id))}</td><td>${tag(d.type)}</td><td>${yuan(d.amount)}</td><td>${tag(d.status || '已收')}</td><td>${esc(d.date || '-')}</td><td>${esc(d.note || '-')}</td></tr>`
-  ).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
+    <tr><td>${esc(d.unit_code || uname(d.unit_id))}</td><td>${esc(ccode(d.contract_id))}</td><td>${esc(cname(d.customer_id))}</td><td>${tag(d.type)}</td><td>${yuan(d.amount)}</td><td>${tag(d.status || '已收')}</td><td>${esc(d.date || '-')}</td><td>${esc(d.note || '-')}</td><td class="ops">${
+      (d.type === '收' && can('deposit_add') && (d.status === '待收缴' || d.status === '部分收'))
+        ? `<button class="btn sm ghost" onclick="markDepositReceived(${d.id})">标记已收</button>`
+        : (d.type === '收' && d.status === '已收' ? '<span class="mut">已收</span>' : '-')
+    }</td></tr>`
+  ).join('') || '<tr><td colspan="9" class="empty">无记录</td></tr>';
 }
+
+window.markDepositReceived = async function(id) {
+  try {
+    await API.put('/api/deposits/' + id, { status: '已收' });
+    toast('押金已标记为「已收」');
+    renderDeposits();
+  } catch (e) { toast('标记失败：' + (e.message || e)); }
+};
 
 // ---------- 工单 ----------
 async function renderWorkOrders() {
