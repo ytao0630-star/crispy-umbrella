@@ -165,6 +165,10 @@ async function renderDashboard() {
   const statusBars = statusEntries.map(([k, n]) =>
     `<div class="bar-row"><div class="bl">${k}</div><div class="bar-track"><div class="bar-fill" style="width:${(n / maxSt * 100).toFixed(1)}%;background:#16a34a"></div></div><div class="bv">${n}</div></div>`).join('');
   const factory = d.factory, apt = d.apartment;
+  const expiring = d.expiring_soon || [];
+  const expHtml = expiring.length
+    ? expiring.map(r => `<div class="follow-item"><div class="follow-head"><b>${esc(r.unit_code || '-')}</b> · ${esc(r.customer_name || '-')} · 合同 ${esc(r.code)}</div><div class="follow-body">到期日 ${esc(r.end_date)} · 剩余 <b style="color:#dc2626">${r.days_left}</b> 天</div></div>`).join('')
+    : `<div class="empty" style="padding:14px">未来 ${d.lease_notice_days || 30} 天无租期到期</div>`;
   $('#view').innerHTML = `
     <div class="section-title">运营看板 <span class="sub">实时汇总 · 数据本地存储</span></div>
     <div class="grid kpi-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-bottom:20px">
@@ -175,6 +179,7 @@ async function renderDashboard() {
       <div class="kpi amber"><div class="label">整体空置</div><div class="value">${d.vacant}</div></div>
       <div class="kpi red"><div class="label">整体欠费</div><div class="value">${yuan(d.arrears)}</div></div>
       <div class="kpi blue"><div class="label">整体收缴率</div><div class="value">${d.collection_rate}<small>%</small></div></div>
+      <div class="kpi red"><div class="label">累计滞纳金</div><div class="value">${yuan(d.late_fee_total || 0)}</div></div>
     </div>
     <div class="section-title" style="font-size:16px;margin-top:4px">🏭 厂房运营</div>
     <div class="grid kpi-grid">
@@ -209,6 +214,12 @@ async function renderDashboard() {
       <div class="panel chart-box">
         <h3>工单统计</h3>
         ${(dictOpts('workorder_status').map(s => `<div class="bar-row"><div class="bl">${s}</div><div class="bar-track"><div class="bar-fill" style="width:${((d.work_orders[s] || 0) / Math.max(1, Object.values(d.work_orders).reduce((a, b) => a + b, 0)) * 100).toFixed(1)}%;background:#d97706"></div></div><div class="bv">${d.work_orders[s] || 0}</div></div>`)).join('')}
+      </div>
+    </div>
+    <div class="chart-flex">
+      <div class="panel chart-box" style="grid-column:1/-1">
+        <h3>📅 租期到期提醒（${expiring.length} 笔 · 提前 ${d.lease_notice_days || 30} 天）</h3>
+        ${expHtml}
       </div>
     </div>`;
 }
@@ -1384,8 +1395,8 @@ async function renderBilling() {
 window.addReceipt = function(billId) {
   openModal('登记收款', `
     <div class="form-grid"><div class="form-row"><label>收款金额</label><input id="f_amt" type="number"></div><div class="form-row"><label>收款日期</label><input id="f_date" type="date" value="${today()}"></div><div class="form-row"><label>收款方式</label><select id="f_method">${sel(['转账','现金','线上','汇票'])}</select></div><div class="form-row"><label>凭证号</label><input id="f_voucher"></div></div>`, async () => {
-    await API.post('/api/bills/' + billId + '/receipt', { amount: +$('#f_amt').value || 0, date: $('#f_date').value, method: $('#f_method').value, voucher_no: $('#f_voucher').value });
-    closeModal(); toast('收款已登记'); renderBilling();
+    const resp = await API.post('/api/bills/' + billId + '/receipt', { amount: +$('#f_amt').value || 0, date: $('#f_date').value, method: $('#f_method').value, voucher_no: $('#f_voucher').value });
+    closeModal(); toast('收款已登记' + (resp && resp.late_fee ? `，滞纳金 ¥${fmt(resp.late_fee)}` : '')); renderBilling();
   });
 };
 

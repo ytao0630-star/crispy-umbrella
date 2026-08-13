@@ -262,6 +262,7 @@ def init_db():
     _ensure_deposit_columns(conn)
     _ensure_workorder_columns(conn)
     _ensure_contract_columns(conn)
+    _ensure_receipt_columns(conn)
     _derive_merchants(conn)
     # 若为空则灌入演示数据
     cnt = c.execute("SELECT COUNT(*) AS n FROM buildings").fetchone()["n"]
@@ -810,6 +811,17 @@ def _ensure_contract_columns(conn):
                 conn.commit()
             except Exception:
                 pass
+
+
+def _ensure_receipt_columns(conn):
+    """收款表补充 late_fee(滞纳金) 列，配合 system_rules.LATE_FEE_RATE 自动计收。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(receipts)").fetchall()}
+    if "late_fee" not in cols:
+        try:
+            conn.execute("ALTER TABLE receipts ADD COLUMN late_fee REAL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass
 
 
 def _derive_merchants(conn):
@@ -2139,18 +2151,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conn = self._db()
         c = conn.cursor()
         amt = float(body.get("amount", 0))
+        date = body.get("date", today())
+        # 滞纳金：超过账单应缴日，按 system_rules.LATE_FEE_RATE(‰/天) 计收
+        late_fee = 0.0
+        try:
+            b = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+            due = b["due_date"]
+            if due:
+                due_d = datetime.datetime.strptime(due, "%Y-%m-%d").date()
+                pay_d = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+                overdue = (pay_d - due_d).days
+                if overdue > 0:
+                    rate = get_rule(conn, "LATE_FEE_RATE", 1.0)   # ‰/天
+                    late_fee = round(amt * (rate / 1000.0) * overdue, 2)
+        except Exception:
+            late_fee = 0.0
         c.execute(
-            "INSERT INTO receipts (bill_id,amount,method,date,operator,voucher_no) VALUES (?,?,?,?,?,?)",
-            (bill_id, amt, body.get("method"), body.get("date", today()),
-             body.get("operator"), body.get("voucher_no")))
+            "INSERT INTO receipts (bill_id,amount,method,date,operator,voucher_no,late_fee) VALUES (?,?,?,?,?,?,?)",
+            (bill_id, amt, body.get("method"), date, body.get("operator"), body.get("voucher_no"), late_fee))
+        rcpt_id = c.lastrowid
         b = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
         new_paid = (b["paid_amount"] or 0) + amt
         c.execute("UPDATE bills SET paid_amount=? WHERE id=?", (new_paid, bill_id))
-        self._audit(conn, "收款", "收费", f"账单#{bill_id} 收款 ¥{amt}", body.get("operator"))
+        audit_detail = f"账单#{bill_id} 收款 ¥{amt}" + (f"（滞纳金 ¥{late_fee}）" if late_fee > 0 else "")
+        self._audit(conn, "收款", "收费", audit_detail, body.get("operator"))
         conn.commit()
         recompute_bill_status(bill_id, conn)
         sync_bill_to_apartment(conn, bill_id)
-        row = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+        row = c.execute("SELECT * FROM receipts WHERE id=?", (rcpt_id,)).fetchone()
         conn.close()
         return row
 
@@ -2975,6 +3003,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         total_available_for_sale = factory["available_for_sale"] + apt["available_for_sale"]
         total_sellable_units = total_sold + total_available_for_sale
 
+        # 租期到期提醒：生效租赁合同，end_date 落在 [今天, 今天+LEASE_NOTICE_DAYS] 内
+        notice_days = int(get_rule(conn, "LEASE_NOTICE_DAYS", 30))
+        today_d = datetime.date.today()
+        cut = today_d + datetime.timedelta(days=notice_days)
+        exp_rows = c.execute("""
+            SELECT ct.id, ct.code, ct.end_date, ct.unit_id, u.code AS unit_code, cu.name AS customer_name
+            FROM contracts ct
+            LEFT JOIN units u ON ct.unit_id=u.id
+            LEFT JOIN customers cu ON ct.customer_id=cu.id
+            WHERE ct.type='租赁' AND ct.status='生效' AND ct.end_date IS NOT NULL
+              AND ct.end_date >= ? AND ct.end_date <= ?
+            ORDER BY ct.end_date
+        """, (today_d.isoformat(), cut.isoformat())).fetchall()
+        expiring_soon = []
+        for r in exp_rows:
+            try:
+                dl = (datetime.datetime.strptime(r["end_date"], "%Y-%m-%d").date() - today_d).days
+            except Exception:
+                dl = None
+            item = dict(r); item["days_left"] = dl
+            expiring_soon.append(item)
+        late_fee_total = c.execute("SELECT COALESCE(SUM(late_fee),0) AS s FROM receipts").fetchone()["s"]
         conn.close()
         return {
             "total_units": total,
@@ -2995,10 +3045,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "work_orders": wo_stat,
             "revenue_trend": trend,
             "type_stat": type_stat,
+            "expiring_soon": expiring_soon,
+            "lease_notice_days": notice_days,
+            "late_fee_total": round(late_fee_total, 2),
         }
 
     def log_message(self, *args):
         pass  # 静默日志
+
+
+def get_rule(conn, code, default):
+    """读取系统规则数值（system_rules.value 为字符串）；缺失或解析失败返回 default。"""
+    try:
+        row = conn.execute("SELECT value FROM system_rules WHERE code=?", (code,)).fetchone()
+    except Exception:
+        return default
+    if not row:
+        return default
+    try:
+        return float(row["value"])
+    except (TypeError, ValueError):
+        return default
 
 
 def main():
