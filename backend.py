@@ -253,6 +253,7 @@ def init_db():
     _migrate_apartment_model(conn)
     _ensure_apartment_sync_columns(conn)
     _migrate_apartment_contracts(conn)
+    _normalize_unit_flags(conn)
     _ensure_units_note_column(conn)
     _ensure_meter_records(conn)
     _ensure_merchants(conn)
@@ -641,6 +642,11 @@ def _migrate_apartment_contracts(conn):
                  ts[:10], "公寓房间租赁(房间级同步)", 12, 0, "不涉及"))
             contract_id = c.lastrowid
         c.execute("UPDATE apartment_rentals SET contract_id=? WHERE id=?", (contract_id, r["rid"]))
+    # 3) 合同金额回流：把房间月租 monthly_rent 回流到 HT-AP 合同 amount
+    #    （仅补充 0/空，不覆盖已手工维护的金额；缺失月租的合同保持 0，待导入真实台账）
+    c.execute(
+        "UPDATE contracts SET amount = (SELECT COALESCE(MAX(ar.monthly_rent),0) FROM apartment_rentals ar "
+        "WHERE ar.contract_id=contracts.id) WHERE code LIKE 'HT-AP-%' AND (amount IS NULL OR amount=0)")
     conn.commit()
 
 
@@ -654,6 +660,20 @@ def _ensure_units_note_column(conn):
             conn.commit()
         except Exception:
             pass
+
+
+def _normalize_unit_flags(conn):
+    """资产单元 rentable/sellable 标志与 status 保持一致（幂等），消除口径不一致：
+    厂房：已售→sellable=1,rentable=0；在租→rentable=1,sellable=0；空置→都=1；自持→都=0。
+    公寓：不售(sellable=0)，全部可租(rentable=1)。
+    说明：sellable 表示『属于可售货量（含已售+待售）』，用于统计可售总量；看板去化率另按 status 计算。"""
+    c = conn.cursor()
+    c.execute("UPDATE units SET sellable=1, rentable=0 WHERE type='厂房' AND status='已售'")
+    c.execute("UPDATE units SET sellable=0, rentable=1 WHERE type='厂房' AND status='在租'")
+    c.execute("UPDATE units SET sellable=1, rentable=1 WHERE type='厂房' AND status='空置'")
+    c.execute("UPDATE units SET sellable=0, rentable=0 WHERE type='厂房' AND status='自持'")
+    c.execute("UPDATE units SET sellable=0, rentable=1 WHERE type='公寓'")
+    conn.commit()
 
 
 def _ensure_meter_records(conn):
@@ -1060,22 +1080,39 @@ def sync_all_apartment_bills(conn):
 
 
 def generate_monthly_bills(month):
-    """为所有生效中的租赁合同生成本月账单：厂房=租金+物业费，公寓=租金（水电按表单独出）。已存在则跳过。"""
+    """为所有生效中的租赁合同生成本月账单：厂房=租金+物业费，公寓=租金（水电按表单独出）。
+    租金金额优先级：合同金额 > 单元租金单价 > 公寓房间月租；金额<=0 的合同不出账（避免 0 元假账单，
+    缺失金额的需先补全合同/单元租金或公寓月租）。已存在同合同同周期同项目则跳过（幂等）。"""
     conn = get_db()
     c = conn.cursor()
     contracts = c.execute(
         "SELECT * FROM contracts WHERE type='租赁' AND status='生效'").fetchall()
     created = 0
+    skipped_zero = 0
     for ct in contracts:
+        ct = dict(ct)
         unit = c.execute("SELECT * FROM units WHERE id=?", (ct["unit_id"],)).fetchone()
         if not unit:
             continue
-        # 租金所有租赁都收
-        items = [("租金", unit["rent_price"])]
+        unit = dict(unit)
+        # 租金金额：优先合同金额；其次单元租金单价；公寓再回退到房间月租
+        rent_amt = ct["amount"] or 0
+        if not rent_amt:
+            rent_amt = unit["rent_price"] or 0
+        if not rent_amt and unit["type"] == "公寓":
+            r = c.execute("SELECT COALESCE(MAX(monthly_rent),0) AS mr FROM apartment_rentals WHERE contract_id=?",
+                          (ct["id"],)).fetchone()
+            rent_amt = r["mr"] if r else 0
+        items = []
+        if rent_amt > 0:
+            items.append(("租金", rent_amt))
+        else:
+            skipped_zero += 1
         # 物业费仅厂房按面积收取
         if unit["type"] == "厂房":
             prop_amt = round((unit["property_price"] or 0) * (unit["area"] or 0), 2)
-            items.append(("物业", prop_amt))
+            if prop_amt > 0:
+                items.append(("物业", prop_amt))
         for item_type, amt in items:
             exists = c.execute(
                 "SELECT id FROM bills WHERE contract_id=? AND item_type=? AND period=?",
@@ -1090,7 +1127,7 @@ def generate_monthly_bills(month):
             created += 1
     conn.commit()
     conn.close()
-    return created
+    return {"created": created, "skipped_zero_amount": skipped_zero, "month": month}
 
 
 # ---------------------------------------------------------------------------
@@ -1261,11 +1298,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_insert_contract(body), 201)
         if path == "/api/bills/generate":
             month = body.get("month") or today()[:7]
-            n = generate_monthly_bills(month)
+            res = generate_monthly_bills(month)
             conn = self._db()
             sync_all_apartment_bills(conn)
             conn.close()
-            return self._send_json({"created": n, "month": month, "apartment_synced": True})
+            return self._send_json({"created": res.get("created", 0), "month": month,
+                                    "skipped_zero_amount": res.get("skipped_zero_amount", 0),
+                                    "apartment_synced": True})
         if path == "/api/bills":
             return self._send_json(self.api_insert("bills", body), 201)
         if path == "/api/meter-readings":
@@ -2014,8 +2053,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 expiring30 += 1
         terminated = len([r for r in rows if r["status"] == "退租"])
         apartments = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='公寓'").fetchone()["n"]
-        rented = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='公寓' AND status='在租'").fetchone()["n"]
-        vacant = apartments - rented
+        rented = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='公寓' AND status IN ('在租', '在住')").fetchone()["n"]
+        vacant = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='公寓' AND status='空置'").fetchone()["n"]
         deposits = c.execute("""
             SELECT COALESCE(SUM(d.amount),0) AS s FROM deposits d
             JOIN contracts ct ON d.contract_id=ct.id
@@ -2042,7 +2081,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         total = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房'").fetchone()["n"]
         rented = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房' AND status='在租'").fetchone()["n"]
         vacant = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房' AND status='空置'").fetchone()["n"]
-        for_sale = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房' AND (status='在售' OR status='空置') AND sellable=1").fetchone()["n"]
+        for_sale = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房' AND status='空置'").fetchone()["n"]
         sold = c.execute("SELECT COUNT(*) AS n FROM units WHERE type='厂房' AND status='已售'").fetchone()["n"]
         sale_contracts = c.execute("SELECT * FROM contracts WHERE type='销售'").fetchall()
         # 已售厂房中已回款
@@ -2617,30 +2656,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
         factory_units = [u for u in units if u["type"] == "厂房"]
         apt_units = [u for u in units if u["type"] == "公寓"]
 
-        def _kpis(us, can_sell=False):
-            rentable = [u for u in us if u["rentable"]]
+        def _kpis(us, unit_type):
+            """按资产单元 status 直接计算出租/去化口径，不再依赖 rentable/sellable 标志，
+            避免标志与状态不一致导致看板分母失真。
+            占用(已出租/已入住) = status ∈ {在租, 在住}。
+            - 公寓：全部套数均为可租赁住房，分母=公寓总套数；公寓不售。
+            - 厂房：可出租 = 在租 + 空置；可售 = 空置（自持/已售不在售）。"""
             st = {}
             for u in us:
                 st[u["status"]] = st.get(u["status"], 0) + 1
-            rented = st.get("在租", 0)
-            sold = st.get("已售", 0)
+            occupied = st.get("在租", 0) + st.get("在住", 0)
+            if unit_type == "公寓":
+                leasable = len(us)            # 公寓皆可租，分母=总套数
+                sold = 0
+                for_sale = 0
+                sale_stock = 0
+            else:  # 厂房
+                leasable = st.get("在租", 0) + st.get("空置", 0)   # 在租+空置 可出租
+                sold = st.get("已售", 0)
+                for_sale = st.get("空置", 0)                      # 空置可售（自持不可售）
+                sale_stock = sold + for_sale
             vacant = st.get("空置", 0)
-            # 销售去化率：已售 / (已售 + 仍可售)，已售单元不再重复计入可售分母
-            available_for_sale = [u for u in us if u["sellable"] and u["status"] in ("空置", "在售")]
-            sale_total_units = sold + len(available_for_sale)
             return {
                 "total": len(us),
-                "rentable": len(rentable),
-                "available_for_sale": len(available_for_sale),
-                "rented": rented,
+                "rentable": leasable,
+                "available_for_sale": for_sale,
+                "rented": occupied,
                 "sold": sold,
                 "vacant": vacant,
-                "lease_rate": round(rented / len(rentable) * 100, 1) if rentable else 0,
-                "sale_rate": round(sold / sale_total_units * 100, 1) if sale_total_units else 0,
+                "lease_rate": round(occupied / leasable * 100, 1) if leasable else 0,
+                "sale_rate": round(sold / sale_stock * 100, 1) if sale_stock else 0,
             }
 
-        factory = _kpis(factory_units, can_sell=True)
-        apt = _kpis(apt_units, can_sell=False)
+        factory = _kpis(factory_units, "厂房")
+        apt = _kpis(apt_units, "公寓")
 
         # 间夜出租率（当年实际占用间夜 / 365*房间数）
         def _night_rate(unit_type):

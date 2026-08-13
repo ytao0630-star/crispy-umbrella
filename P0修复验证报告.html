@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>园区资管系统 · P0 修复验证报告</title>
+<style>
+  :root{--bg:#f5f7fa;--card:#fff;--line:#e5e9f0;--ink:#1f2937;--muted:#6b7280;
+        --blue:#2563eb;--green:#16a34a;--amber:#d97706;--red:#dc2626;--purple:#7c3aed;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.6;padding:28px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:16px;
+        box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  h2{font-size:17px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  .tag{font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px}
+  .ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  .before{color:var(--red);font-weight:600}.after{color:var(--green);font-weight:600}
+  .kpi-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .kpi{flex:1;min-width:120px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi .l{font-size:12px;color:var(--muted)}.kpi .v{font-size:22px;font-weight:700;margin-top:2px}
+  .note{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:14px 16px;font-size:14px}
+  ul{margin:8px 0;padding-left:20px}li{margin:4px 0}
+  code{background:#f1f5f9;padding:1px 6px;border-radius:5px;font-size:13px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>园区资管系统 · P0 修复验证报告</h1>
+  <div class="sub">角色视角：园区管理总经理 + 测试经理　|　修复日期：2026-08-13　|　状态：<span class="tag ok">P0 已修复并回归验证</span></div>
+
+  <div class="card">
+    <h2>一、总体结论</h2>
+    <p>三项 P0（指标级口径缺陷）已全部修复并通过回归验证，<b>未引入任何回归</b>。核心逻辑缺陷（出租率/去化率口径、合同→账单出账管线）已纠正；剩余问题为<b>底层真实台账数据缺失</b>（非代码缺陷），已明确标注为待办，不虚构数据。</p>
+    <div class="kpi-row">
+      <div class="kpi"><div class="l">公寓出租率</div><div class="v">94.0%</div></div>
+      <div class="kpi"><div class="l">厂房出租率</div><div class="v">26.7%</div></div>
+      <div class="kpi"><div class="l">厂房去化率</div><div class="v">57.7%</div></div>
+      <div class="kpi"><div class="l">整体出租率</div><div class="v">80.3%</div></div>
+      <div class="kpi"><div class="l">应收总额</div><div class="v">¥23,768</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>二、P0-1 公寓出租率失真 <span class="tag ok">已修复</span></h2>
+    <p><b>根因：</b>看板 <code>_kpis()</code> 只把 <code>status='在租'</code> 计为已出租，但公寓单元状态实际为「在住(108)+在租(2)+空置(7)」，导致出租率显示 ≈1.7%（实为 94%），且与公寓管理页"在住 108"口径打架。</p>
+    <table>
+      <tr><th>指标</th><th>修复前</th><th>修复后</th><th>说明</th></tr>
+      <tr><td>公寓出租率</td><td class="before">≈1.7%</td><td class="after">94.0%</td><td>占用口径改为 在住+在租=110 / 公寓总套数117</td></tr>
+      <tr><td>公寓空置</td><td class="before">115</td><td class="after">7</td><td>空置=真实 status='空置'</td></tr>
+      <tr><td>整体出租率</td><td class="before">失真</td><td class="after">80.3%</td><td>公寓94% + 厂房27% 加权</td></tr>
+    </table>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:0">修复方式：<code>_kpis()</code> 改为按 <code>status</code> 直接计算（公寓全部可租、分母=总套数；厂房可租=在租+空置），与 <code>rentable/sellable</code> 标志解耦，并同步修正 <code>api_apartments_summary</code>。看板与子模块口径现已一致。</p>
+  </div>
+
+  <div class="card">
+    <h2>三、P0-3 厂房租售标记不一致 <span class="tag ok">已修复</span></h2>
+    <p><b>根因：</b>厂房 30 套「已售」单元的 <code>sellable</code> 标志全为 0，与状态不一致，导致可售总量统计失真。</p>
+    <table>
+      <tr><th>指标</th><th>修复前</th><th>修复后</th></tr>
+      <tr><td>厂房去化率</td><td class="before">分母失真</td><td class="after">57.7%</td></tr>
+      <tr><td>单元标志一致性</td><td class="before">已售 sellable=0</td><td class="after">按 status 归一（已售→sellable=1/rentable=0；在租/空置/自持分别标定）</td></tr>
+    </table>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:0">新增 <code>_normalize_unit_flags()</code> 幂等迁移并在 <code>init_db</code> 调用；看板去化率改为直接由 <code>status</code> 计算，标志仅作展示，不再影响口径。</p>
+  </div>
+
+  <div class="card">
+    <h2>四、P0-2 合同→账单主营收线空转 <span class="tag ok">逻辑已修复</span></h2>
+    <p><b>根因：</b>原 <code>generate_monthly_bills()</code> 用 <code>units.rent_price</code> 作租金金额，而公寓租金在 <code>apartment_rentals.monthly_rent</code>、厂房租赁合同金额多为 0，导致跑出来几乎全是 0 元账单，应收/收缴率成空壳。</p>
+    <table>
+      <tr><th>修复项</th><th>内容</th></tr>
+      <tr><td>金额来源优先级</td><td>合同金额 → 单元租金单价 → 公寓房间月租（取第一个 &gt;0）</td></tr>
+      <tr><td>0 元假账单</td><td>金额≤0 的合同<b>不再出账</b>，避免污染应收</td></tr>
+      <tr><td>金额回流</td><td>启动时为 HT-AP 合同回填房间月租（仅补 0/空，不覆盖已维护值）</td></tr>
+      <tr><td>幂等</td><td>同合同+同周期+同项目已存在则跳过；复跑 <code>created=0</code> ✓</td></tr>
+      <tr><td>提示透明</td><td>前端"生成月度账单"按钮提示「已生成 N 笔；M 份合同缺金额未出账」</td></tr>
+    </table>
+    <p><b>验证结果：</b>触发生成后，厂房那份真实金额合同（¥21,600）已正确生成租金账单；应收总额由 ¥2,168 升至 ¥23,768；116 份缺金额合同被正确跳过，未产生 0 元账单。</p>
+    <div class="note">
+      <b>⚠️ 剩余数据缺口（非代码缺陷，需用户导入真实台账）：</b><br>
+      117 份生效租赁合同中仅 <b>1 份</b>有真实金额，<b>116 份</b>（含 108 份公寓 + 8 份厂房租赁）金额仍为 0；公寓 113 条出租记录仅 5 间有月租且未关联合同/资产单元。
+      系统逻辑已正确，"主营收线"能否体现全量，取决于真实月租/租金台账是否录入。建议：批量导入各在住房间的 <code>monthly_rent</code> 及厂房租赁合同金额后，一键"生成月度账单"即可全量出账。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>五、回归验证清单</h2>
+    <ul>
+      <li>✅ 看板 KPI（出租率/去化率/空置/应收）口径一致、数值可信</li>
+      <li>✅ 公寓管理页与看板出租率不再打架（均为 94%）</li>
+      <li>✅ 抄表→账单→公寓收费联动（方案 B）不受影响，仍按真实读数出账</li>
+      <li>✅ 生成月度账单幂等，重复执行不产生重复账单</li>
+      <li>✅ 无新增 0 元假账单；缺失金额的合同被显式跳过并提示</li>
+      <li>✅ 后端重启正常（<code>init_db</code> 含归一化与金额回流，幂等）</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>六、改动文件</h2>
+    <ul>
+      <li><code>backend.py</code>：重写 <code>_kpis()</code>；修复 <code>api_apartments_summary</code>/<code>api_factories_summary</code> 口径；新增 <code>_normalize_unit_flags()</code>；改进 <code>generate_monthly_bills()</code> 金额来源与 0 元拦截；<code>_migrate_apartment_contracts</code> 末尾回填合同金额；适配 <code>/api/bills/generate</code> 返回结构。</li>
+      <li><code>static/app.js</code>：生成账单按钮提示"缺金额未出账"数量（缓存版本 → <span class="mono">20260813b</span>）。</li>
+      <li><code>static/index.html</code>：刷新 app.js 缓存版本号。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>七、建议的后续行动</h2>
+    <ul>
+      <li><b>数据补录（P0-2 收尾）：</b>导入 108 间在租公寓的真实月度租金 + 厂房租赁合同真实金额，再生成账单即可全量体现应收/收缴率。</li>
+      <li><b>P1（原审计）：</b>商户管理关联租/售合同、客户详情下钻、工单关联单元、签约自动收押/退租退押、业务操作落审计日志、后端权限校验、系统规则与数据字典接管前端。</li>
+      <li><b>P2（表单深化）：</b>资产单元补全楼层/用途/计租面积等；合同补全免租期/经办人/递增；工单补全优先级/SLA；客户新建补全证照录入。</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

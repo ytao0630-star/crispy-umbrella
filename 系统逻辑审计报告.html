@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>园区资管系统 · 系统逻辑审计报告</title>
+<style>
+  :root{--bg:#f5f7fa;--card:#fff;--line:#e6e9ef;--ink:#1f2733;--muted:#6b7785;--accent:#2563eb;--red:#dc2626;--amber:#d97706;--green:#16a34a;--purple:#7c3aed}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 80px}
+  header.top{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;border-radius:16px;padding:28px 32px;margin-bottom:24px}
+  header.top h1{margin:0 0 6px;font-size:24px}
+  header.top .sub{opacity:.9;font-size:13px}
+  .score{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+  .score .box{background:rgba(255,255,255,.14);border-radius:10px;padding:10px 16px;font-size:13px}
+  .score .box b{display:block;font-size:22px;margin-top:2px}
+  h2{font-size:19px;margin:34px 0 12px;padding-left:10px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--ink)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;box-shadow:0 1px 3px rgba(16,24,40,.04)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f0f4fa;font-weight:600}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+  .p0{background:#fee2e2;color:#b91c1c}.p1{background:#fef3c7;color:#b45309}.p2{background:#e0e7ff;color:#4338ca}
+  .ok{background:#dcfce7;color:#15803d}
+  ul{margin:6px 0 6px 2px;padding-left:18px}
+  li{margin:4px 0}
+  .kpi-row{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kpi{background:#f0f4fa;border-radius:10px;padding:10px 14px;min-width:120px}
+  .kpi .l{font-size:12px;color:var(--muted)}
+  .kpi .v{font-size:20px;font-weight:700;margin-top:2px}
+  code{background:#eef2f7;padding:1px 5px;border-radius:4px;font-size:12px}
+  .note{font-size:12px;color:var(--muted);margin-top:6px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:6px;font-size:12px;background:#eef2f7;margin:2px 3px 2px 0}
+  .broken{background:#fff7ed;border:1px solid #fed7aa}
+  .fix{background:#f0fdf4;border:1px solid #bbf7d0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>工业园区资产管理系统 · 系统逻辑审计报告</h1>
+  <div class="sub">视角：园区管理总经理 + 测试经理　|　审计日期：2026-08-13　|　覆盖：后端 backend.py（2774 行）+ 前端 app.js（1966 行）+ 真实 park.db 数据</div>
+  <div class="score">
+    <div class="box">整体结论<b>主线可用，决策口径存疑</b></div>
+    <div class="box">逻辑清晰度<b>6.5 / 10</b></div>
+    <div class="box">关联完整性<b>5 / 10</b></div>
+    <div class="box">表单完整度<b>5.5 / 10</b></div>
+    <div class="box">数据健康度<b>6 / 10</b></div>
+  </div>
+</header>
+
+<div class="card">
+  <b>一句话总评：</b> 系统的"骨架"已经搭起来——资产台账、公寓、厂房租售、合同、收费、抄表、客户、商户、工单、系统设置十大域都在，且已导入了 <b>188 个单元 / 113 个客户 / 147 份生效合同</b> 的真实台账。但<u>从"总经理决策口径"看，有 2 个会直接误导经营判断的指标级 BUG，以及一条"合同→账单→收款"主营收线几乎没数据驱动</u>的断点。表单整体偏"录入薄"，多处主数据未打通。建议先做 P0 三个口径修复，再补关联，最后做表单增厚。
+</div>
+
+<h2>一、已打通的逻辑（值得肯定的部分）</h2>
+<div class="card">
+  <ul>
+    <li><b>资产↔合同↔客户 主链基本通：</b> <code>units.current_contract_id / current_customer_id</code> 指针齐全，仅 1 个异常单元（已定位）。资产台账、厂房租赁/销售、合同三处可互查。</li>
+    <li><b>抄表↔资产已关联：</b> <code>/api/meter-units</code> 以签约生效合同派生 149 个"应抄表单元"（公寓 109 + 厂房租赁 9 + 厂房销售 31），抄表记录通过 <code>unit_id</code> 双向关联到资产/公寓/厂房详情。</li>
+    <li><b>水电抄表↔收费账单联动已落地（方案 B）：</b> 抄表"生成账单"会把水电金额按"水费/电费"两条拆账写进 <code>apartment_fees</code>，并幂等。</li>
+    <li><b>合同状态机相对完整：</b> 签约自动联动单元状态（在租/已售）、续租（保留原合同指针）、退租（单元置空 + 押金/末月租金/末月水电结算开口）。</li>
+    <li><b>看板 KPI 维度齐：</b> 出租率、间夜出租率、销售去化率、应收/已收/欠费/收缴率、营收趋势、工单统计都有聚合。</li>
+  </ul>
+</div>
+
+<h2>二、核心逻辑缺陷（直接影响经营决策，必须修）</h2>
+
+<div class="card broken">
+  <h3>🔴 P0-1　公寓出租率 / 出租数 指标失真（肉眼可见）</h3>
+  <p><b>现象：</b> 看板上"公寓出租率"会显示约 <b>1.7%</b>，但真实占用是 110/117（94%）。</p>
+  <p><b>根因：</b> 仪表盘 <code>api_dashboard._kpis()</code> 用 <code>st.get("在租")</code> 计数出租套数；而导入的公寓单元状态是 <b>"在住"(108) + "在租"(2) + "空置"(7)</b>。108 套"在住"不被计入 → 出租率≈2/117。</p>
+  <p><b>连锁：</b> 同一个"公寓出租"数据，在 <code>公寓管理</code> 页 summary 却显示"当前在住 108"（按合同算，正确），<u>看板与子模块口径打架</u>，总经理一眼就能看出矛盾。</p>
+  <p><b>修复方向：</b> 公寓出租口径应统一按"占用 = 在住 + 在租"或按合同数；并统一单元状态字典（"在住"并入"在租"语义）。</p>
+</div>
+
+<div class="card broken">
+  <h3>🔴 P0-2　"合同→账单→收款"主营收线几乎空转</h3>
+  <p><b>数据实测：</b> 147 份生效合同，全库仅 <b>2 笔账单</b>（覆盖 1 份合同）；应收、收缴率、欠费分析因此基本无数据支撑。</p>
+  <p><b>根因：</b></p>
+  <ul>
+    <li>账单生成入口 <code>generate_monthly_bills</code> 从未被批量执行过（需点"生成月度账单"，且当前只点了 1 次）；</li>
+    <li>更致命：<b>108 份公寓合同（HT-AP）金额全部 = 0</b>。公寓真实月租在 <code>apartment_rentals.monthly_rent</code> 里有值，但<u>没有回流到合同 amount</u>，导致即便生成账单也是 0 元，方案 B 同步到公寓收费的也是 0。</li>
+  </ul>
+  <p><b>影响：</b> 财务"收费"页、看板"应收/欠费/收缴率"对总经理基本是空壳；公寓"水电费"无法体现真实租金口径。</p>
+  <p><b>修复方向：</b> ① 公寓合同 amount 回填为对应房间月租合计；② 上线"按月批量生成账单"并提供一键跑全量历史；③ 生成前校验金额>0。</p>
+</div>
+
+<div class="card broken">
+  <h3>🔴 P0-3　厂房 rentable / sellable 标记与状态不一致</h3>
+  <p><b>数据实测：</b> 厂房 71 套——在租 8、已售 30、空置 22、自持 11；但 <code>rentable=1</code> 仅 30 套、<code>sellable=1</code> 仅 22 套。即 <b>30 套"已售"中，只有 22 套被标记为可售</b>，8 套已售厂房 sellable 仍为 0；自持 11 套的租售标记也未归一。</p>
+  <p><b>影响：</b> 看板"厂房出租率/去化率"分母依赖这两个标记，口径失真且难以复核。需在导入/状态变更时让 <code>status</code> 与 <code>rentable/sellable</code> 联动一致。</p>
+</div>
+
+<h2>三、应关联但没关联的内容（断点清单）</h2>
+<div class="card">
+<table>
+  <tr><th>断点</th><th>现状</th><th>应有联动</th><th>级别</th></tr>
+  <tr><td>合同 → 账单</td><td>147 生效合同仅 2 账单</td><td>签约/每月自动派生应收账单</td><td><span class="tag p0">P0</span></td></tr>
+  <tr><td>公寓月租 → 合同金额</td><td>108 公寓合同金额全 0</td><td>房间月租合计回填合同 amount</td><td><span class="tag p0">P0</span></td></tr>
+  <tr><td>商户管理 → 单元/客户/合同</td><td>4 条商户 unit_id、customer_id 全空（平行孤岛）</td><td>商户应从租/售合同派生，自动带出单元与客户</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>客户详情 → 名下合同/资产/应收</td><td>客户详情只显示跟进记录</td><td>下钻看"该客户全部合同、单元、账单、欠款"</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>工单 → 单元/客户</td><td>工单有 unit_id 字段，但新增表单无单元选择器，列表也不显示单元</td><td>报修直接关联出问题单元/租户，便于派工与统计</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>押金 → 合同/退租</td><td>押金仅手工登记；无"签约自动收押、退租自动退押"</td><td>押金台账由合同动作自动产生 + 可按单元/客户筛选</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>审计日志</td><td>全库 3 条（全种子），所有业务操作不落审计</td><td>新增/收款/合同/退租等关键动作写 audit_logs</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>权限</td><td>前端 PERMS 仅隐藏按钮；后端 do_POST/PUT/DELETE 不鉴权，园区领导"只读"后端无保护</td><td>后端按角色拦截写操作</td><td><span class="tag p1">P1</span></td></tr>
+  <tr><td>市场调研 → 招商线索</td><td>竞品库静态，无"转为客户/线索"动作</td><td>竞品可一键转为客户并带渠道来源</td><td><span class="tag p2">P2</span></td></tr>
+  <tr><td>系统规则</td><td>3 条规则（到期提醒/租金截止日/滞纳金）从未被代码读取，到期提醒硬编码、滞纳金从未计算</td><td>规则驱动到期预警与滞纳金</td><td><span class="tag p2">P2</span></td></tr>
+  <tr><td>数据字典</td><td>data_dict 有内容，但前端所有下拉（合同类型/单元状态/账单项目）硬编码</td><td>下拉统一取自数据字典</td><td><span class="tag p2">P2</span></td></tr>
+</table>
+</div>
+
+<h2>四、表单过于简陋（按模块列字段缺口）</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>🏢 资产单元（核心表单，最薄）</h3>
+    <p>现有：编号/楼栋/业态/面积/月租金/售价/可租/可售/状态。</p>
+    <p><b>缺：</b> 楼层号、用途（生产/办公/仓储）、交付标准、朝向、建筑面积 vs 计租面积、层高/承重、设备清单、关联楼栋楼层。<br><span class="note">影响：资产台账无法支撑面积去化、设备盘点、招商定价。</span></p>
+  </div>
+  <div class="card">
+    <h3>📄 合同（新建偏薄）</h3>
+    <p>现有：合同号/客户/金额/周期/起止/押金。</p>
+    <p><b>缺：</b> 免租期（free_days 有字段未用）、签约日期（写死 today 不可改）、经办人、租金递增条款、销售分期/按揭方式、保证金条款、附件、备注（被 type 占位）。<br><span class="note">影响：财务/法务口径缺失，合同文本不可追溯。</span></p>
+  </div>
+  <div class="card">
+    <h3>🔧 工单（最简）</h3>
+    <p>现有：工单号/类型/报修人/处理人/描述/状态。</p>
+    <p><b>缺：</b> 关联单元（字段有 unit_id 但未暴露）、优先级、期望完成时间、实际完成时间、维修费用、满意度评分（rating 字段浪费）、派工记录。<br><span class="note">影响：无法做"单元维度报修热力"和 SLA 考核。</span></p>
+  </div>
+  <div class="card">
+    <h3>👤 客户（尚可，有漏洞）</h3>
+    <p>现有：类型/名称/联系人/电话/业务线/阶段/渠道/来源/负责人/行业/需求/预算/标签/地址。</p>
+    <p><b>缺：</b> 企业信用代码 / 个人身份证号（新建时<b>无录入框</b>，仅在编辑时搬旧值）、开票信息、关联合同/资产下钻。<br><span class="note">影响：财务开票、风控缺证照。</span></p>
+  </div>
+  <div class="card">
+    <h3>💰 收款（偏简单但可接受）</h3>
+    <p>现有：金额/日期/方式/凭证号。</p>
+    <p><b>可补：</b> 冲抵哪一期、部分收款备注、是否有滞纳金一并收取。</p>
+  </div>
+  <div class="card">
+    <h3>⚙️ 系统人员（小问题）</h3>
+    <p>角色用<b>自由文本输入框</b>，可输入任意值，与 <code>sys_roles</code> 表脱节；部门/角色应以下拉联动。</p>
+  </div>
+</div>
+<div class="note">抄表表单相对完整（水/电双表、用量自动算、费用预览、CSV 导入导出），但单价默认 3 元/吨、1.5 元/度是硬编码，应取自系统规则或单元定价。</div>
+
+<h2>五、数据健康度（冗余与脏数据）</h2>
+<div class="card">
+  <ul>
+    <li><b>双公寓模型并行：</b> 旧表 <code>apartment_records</code> 仍残留 <b>5 条</b>种子数据，前端不用但 API 仍可写——存在脏数据风险，建议删除旧表或冻结写入。</li>
+    <li><b>双抄表表并行：</b> 旧表 <code>meter_readings</code> 残留 <b>2 条</b> demo 数据（新建抄表走 <code>meter_reading_records</code>），建议清理。</li>
+    <li><b>自动生成客户：</b> 110 个公寓客户由 <code>_migrate_apartment_contracts</code> 自动建，<code>address='园区公寓'</code>、无工商信息——属于"系统派生客户"，应与真实招商客户区分/合并。</li>
+    <li><b>单元状态字典不统一：</b> 公寓用"在住/在租/空置"，厂房用"在租/已售/空置/自持"，资产台账筛选下拉却是另一套（含装修中/锁定）——三处枚举不一致。</li>
+  </ul>
+</div>
+
+<h2>六、优先级整改路线图</h2>
+<div class="card fix">
+  <h3>🟢 P0（立即，影响决策真实性）</h3>
+  <ul>
+    <li>① 修复公寓出租率口径（看板与子模块统一按"占用=在住+在租"或按合同数）。</li>
+    <li>② 公寓合同 amount 回填为房间月租合计；并补一段"按合同批量生成历史账单"脚本，跑通 147 份合同的应收。</li>
+    <li>③ 校验并归一厂房 rentable/sellable 与 status 的一致性。</li>
+  </ul>
+  <h3>🟡 P1（关联打通，1~2 周）</h3>
+  <ul>
+    <li>商户由合同派生、客户详情加"合同/资产/应收"下钻、工单关联单元、押金由合同动作自动产生、关键操作落审计、后端权限校验。</li>
+  </ul>
+  <h3>🔵 P2（健壮性/体验，后续）</h3>
+  <ul>
+    <li>清理双模型旧表、系统规则驱动到期/滞纳金、数据字典接管下拉、市场调研转线索、表单字段增厚（单元/合同/工单/客户证照）。</li>
+  </ul>
+  <p class="note">以上均为"只读审计"，未改动任何代码与数据。确认整改范围后，我可按 P0→P1→P2 顺序逐批实施并回测。</p>
+</div>
+
+<div class="card">
+  <b>附：关键数据实测快照（2026-08-13）</b>
+  <div class="kpi-row">
+    <div class="kpi"><div class="l">楼栋</div><div class="v">20</div></div>
+    <div class="kpi"><div class="l">单元</div><div class="v">188</div></div>
+    <div class="kpi"><div class="l">客户</div><div class="v">113</div></div>
+    <div class="kpi"><div class="l">生效合同</div><div class="v">147</div></div>
+    <div class="kpi"><div class="l">账单</div><div class="v" style="color:#dc2626">2</div></div>
+    <div class="kpi"><div class="l">公寓合同额=0</div><div class="v" style="color:#dc2626">108</div></div>
+    <div class="kpi"><div class="l">抄表记录</div><div class="v" style="color:#dc2626">0</div></div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

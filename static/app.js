@@ -1276,7 +1276,7 @@ async function renderBilling() {
       </tr>`).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
   }
   $('#fStatus').onchange = renderList; $('#fType').onchange = renderList;
-  $('#genBills').onclick = async () => { const r = await API.post('/api/bills/generate', { month: today().slice(0, 7) }); toast(`生成 ${r.created} 笔账单`); renderBilling(); };
+  $('#genBills').onclick = async () => { const r = await API.post('/api/bills/generate', { month: today().slice(0, 7) }); toast(`已生成 ${r.created} 笔账单；${r.skipped_zero_amount || 0} 份合同缺金额未出账`); renderBilling(); };
   renderList();
 }
 window.addReceipt = function(billId) {
