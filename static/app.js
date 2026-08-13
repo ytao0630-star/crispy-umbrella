@@ -20,6 +20,46 @@ let SYS_TAB = 'users';
 let CURRENT_VIEW = 'dashboard';
 const CACHE = { buildings: [], customers: [], units: [], contracts: [] };
 
+// ---------- 数据字典（接管各模块下拉；后端 data_dict 表种子，启动时拉取；失败回退内置默认值）----------
+const DICT_DEFAULTS = {
+  unit_status: ['空置', '在租', '在售', '已售', '自持', '装修中', '锁定'],
+  room_status: ['空置', '已预订', '在住', '待退房'],
+  room_category: ['单人间', '双人间', '四人间', '套房'],
+  contract_type: ['租赁', '销售'],
+  contract_status: ['生效', '到期', '退租', '已售'],
+  biz_type: ['销售', '租赁'],
+  customer_type: ['企业', '个人'],
+  fee_type: ['房租', '押金', '电费', '水费', '物业费', '网费', '退押金', '其他'],
+  pay_method: ['现金', '微信', '支付宝', '银行转账', '对公', '其他'],
+  fee_status: ['已收', '已退', '待收'],
+  apartment_fee_status: ['待缴', '已缴', '欠费'],
+  bill_item: ['租金', '物业费', '水电费', '房款'],
+  factory_type: ['标准厂房', '独栋厂房', '分层厂房', '钢结构厂房'],
+  follow_method: ['电话', '拜访', '微信', '邮件', '其他'],
+  workorder_type: ['报修', '投诉', '咨询', '巡检', '其他'],
+  workorder_status: ['待派', '处理中', '已完成'],
+  asset_type: ['厂房', '公寓'],
+  pay_cycle: ['月', '季', '年', '一次性'],
+};
+const DICT = Object.assign({}, DICT_DEFAULTS);
+async function loadDict() {
+  try {
+    const rows = await API.get('/api/data_dict');
+    if (!Array.isArray(rows)) return;
+    const byType = {};
+    rows.forEach(r => { (byType[r.type] = byType[r.type] || []).push(r); });
+    Object.keys(byType).forEach(t => {
+      byType[t].sort((a, b) => (a.sort || 0) - (b.sort || 0));
+      DICT[t] = byType[t].map(x => x.name);
+    });
+  } catch (e) { /* 网络异常时回退内置默认值，保证下拉可用 */ }
+}
+// 取某类型选项；empty=true 时首项为 ''（用于筛选“全部”）
+function dictOpts(type, { empty = false } = {}) {
+  const arr = DICT[type] || [];
+  return empty ? [''].concat(arr) : arr.slice();
+}
+
 const PERMS = {
   '系统管理员': 'all',
   '招商专员': ['customers_add', 'contracts_add', 'unit_edit', 'lease_renew', 'lease_terminate', 'factory_view', 'merchants_add', 'merchants_edit', 'merchants_delete'],
@@ -168,7 +208,7 @@ async function renderDashboard() {
       </div>
       <div class="panel chart-box">
         <h3>工单统计</h3>
-        ${(['待派', '处理中', '已完成'].map(s => `<div class="bar-row"><div class="bl">${s}</div><div class="bar-track"><div class="bar-fill" style="width:${((d.work_orders[s] || 0) / Math.max(1, Object.values(d.work_orders).reduce((a, b) => a + b, 0)) * 100).toFixed(1)}%;background:#d97706"></div></div><div class="bv">${d.work_orders[s] || 0}</div></div>`)).join('')}
+        ${(dictOpts('workorder_status').map(s => `<div class="bar-row"><div class="bl">${s}</div><div class="bar-track"><div class="bar-fill" style="width:${((d.work_orders[s] || 0) / Math.max(1, Object.values(d.work_orders).reduce((a, b) => a + b, 0)) * 100).toFixed(1)}%;background:#d97706"></div></div><div class="bv">${d.work_orders[s] || 0}</div></div>`)).join('')}
       </div>
     </div>`;
 }
@@ -177,8 +217,8 @@ async function renderDashboard() {
 async function renderAssets() {
   const [units, buildings] = await Promise.all([API.get('/api/units'), API.get('/api/buildings')]);
   CACHE.buildings = buildings; CACHE.units = units;
-  const statusOpts = ['', '空置', '在租', '在售', '已售', '自持', '装修中', '锁定'];
-  const typeOpts = ['', '厂房', '公寓'];
+  const statusOpts = dictOpts('unit_status', { empty: true });
+  const typeOpts = dictOpts('asset_type', { empty: true });
   const bOpts = ['', ...buildings.map(b => b.id)];
   $('#view').innerHTML = `
     <div class="section-title">资产台账 <span class="sub">楼栋 → 单元三级，状态实时联动</span></div>
@@ -209,12 +249,12 @@ async function renderAssets() {
   renderList();
   if (can('unit_edit')) {
     $('#addBuilding').onclick = () => openModal('新增楼栋', `
-      <div class="form-grid"><div class="form-row"><label>编号</label><input id="f_code"></div><div class="form-row"><label>名称</label><input id="f_name"></div><div class="form-row"><label>业态</label><select id="f_type">${sel(['厂房','公寓'])}</select></div><div class="form-row"><label>楼层数</label><input id="f_floors" type="number"></div><div class="form-row" style="grid-column:1/3"><label>地址</label><input id="f_addr"></div><div class="form-row" style="grid-column:1/3"><label>总面积</label><input id="f_area" type="number"></div></div>`, async () => {
+      <div class="form-grid"><div class="form-row"><label>编号</label><input id="f_code"></div><div class="form-row"><label>名称</label><input id="f_name"></div><div class="form-row"><label>业态</label><select id="f_type">${sel(dictOpts('asset_type'))}</select></div><div class="form-row"><label>楼层数</label><input id="f_floors" type="number"></div><div class="form-row" style="grid-column:1/3"><label>地址</label><input id="f_addr"></div><div class="form-row" style="grid-column:1/3"><label>总面积</label><input id="f_area" type="number"></div></div>`, async () => {
       await API.post('/api/buildings', { code: $('#f_code').value, name: $('#f_name').value, type: $('#f_type').value, floors: +$('#f_floors').value || 0, address: $('#f_addr').value, total_area: +$('#f_area').value || 0 });
       closeModal(); toast('楼栋已添加'); renderAssets();
     });
     $('#addUnit').onclick = () => openModal('新增单元', `
-      <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code"></div><div class="form-row"><label>所属楼栋</label><select id="f_bld">${bOpts.slice(1).map(o => `<option value="${o}">${bname(o)}</option>`).join('')}</select></div><div class="form-row"><label>业态</label><select id="f_type">${sel(['厂房','公寓'])}</select></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number"></div><div class="form-row"><label>售价</label><input id="f_price" type="number"></div><div class="form-row"><label>可租</label><select id="f_rentable">${sel(['1','0'])}</select></div><div class="form-row"><label>可售</label><select id="f_sellable">${sel(['1','0'])}</select></div></div>`, async () => {
+      <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code"></div><div class="form-row"><label>所属楼栋</label><select id="f_bld">${bOpts.slice(1).map(o => `<option value="${o}">${bname(o)}</option>`).join('')}</select></div><div class="form-row"><label>业态</label><select id="f_type">${sel(dictOpts('asset_type'))}</select></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number"></div><div class="form-row"><label>售价</label><input id="f_price" type="number"></div><div class="form-row"><label>可租</label><select id="f_rentable">${sel(['1','0'])}</select></div><div class="form-row"><label>可售</label><select id="f_sellable">${sel(['1','0'])}</select></div></div>`, async () => {
       await API.post('/api/units', { code: $('#f_code').value, building_id: +$('#f_bld').value, type: $('#f_type').value, area: +$('#f_area').value || 0, rent_price: +$('#f_rent').value || 0, property_price: +$('#f_price').value || 0, sellable: +$('#f_sellable').value, rentable: +$('#f_rentable').value, status: '空置' });
       closeModal(); toast('单元已添加'); renderAssets();
     });
@@ -223,7 +263,7 @@ async function renderAssets() {
 window.editUnit = async function(id) {
   const u = CACHE.units.find(x => x.id == id);
   openModal('编辑单元', `
-    <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code" value="${esc(u.code)}"></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number" value="${u.area || ''}"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number" value="${u.rent_price || ''}"></div><div class="form-row"><label>售价</label><input id="f_price" type="number" value="${u.property_price || ''}"></div><div class="form-row"><label>状态</label><select id="f_status">${sel(['空置','在租','在售','已售','装修中','锁定'], u.status)}</select></div></div>
+    <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code" value="${esc(u.code)}"></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number" value="${u.area || ''}"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number" value="${u.rent_price || ''}"></div><div class="form-row"><label>售价</label><input id="f_price" type="number" value="${u.property_price || ''}"></div><div class="form-row"><label>状态</label><select id="f_status">${sel(dictOpts('unit_status'), u.status)}</select></div></div>
     <div class="form-row" style="grid-column:1/3"><label>钥匙信息</label><textarea id="f_keys" rows="2" placeholder="如：大门钥匙2把 + 配电房钥匙1把">${esc(u.key_info || '')}</textarea></div>`, async () => {
     await API.put('/api/units/' + id, { code: $('#f_code').value, area: +$('#f_area').value || 0, rent_price: +$('#f_rent').value || 0, property_price: +$('#f_price').value || 0, status: $('#f_status').value, key_info: $('#f_keys').value || '' });
     closeModal(); toast('单元已更新'); renderAssets();
@@ -239,8 +279,8 @@ async function renderLeases() {
   let aptYear = String(year);
   CACHE.apartmentRooms = rooms;
   CACHE.aptSummary = summary;
-  const statusOpts = ['', '空置', '已预订', '在住', '待退房'];
-  const categoryOpts = ['', '单人间', '双人间', '四人间', '套房'];
+  const statusOpts = dictOpts('room_status', { empty: true });
+  const categoryOpts = dictOpts('room_category', { empty: true });
   const floors = ['', ...new Set(rooms.map(r => r.floor).filter(Boolean))];
   let filters = { category: '', floor: '', keyword: '' };
 
@@ -396,7 +436,7 @@ async function renderLeases() {
 window.openRoomModal = function(id) {
   const isEdit = !!id;
   const r = isEdit ? CACHE.apartmentRooms.find(x => x.id == id) : {};
-  const categoryOpts = ['单人间', '双人间', '四人间', '套房'];
+  const categoryOpts = dictOpts('room_category');
   const orientOpts = ['东', '西', '南', '北', '南北通透', '东南', '西南', '东北', '西北'];
   openModal(isEdit ? '编辑房间' : '新增房间', `
     <div class="form-grid">
@@ -435,7 +475,7 @@ window.openRentalModal = async function(roomId, rentalId) {
     room = CACHE.apartmentRooms.find(x => x.id == roomId);
   }
   const isEdit = !!rec;
-  const statusOpts = ['待缴', '已缴', '欠费'];
+  const statusOpts = dictOpts('apartment_fee_status');
   const roomsOpts = CACHE.apartmentRooms.map(x => `<option value="${x.id}" ${String(x.id)===String(roomId)?'selected':''}>${esc(x.room_no)}（${esc(x.room_category||'')}）</option>`).join('');
   openModal(isEdit ? '编辑出租记录' : '登记出租', `
     <div class="form-grid">
@@ -509,9 +549,9 @@ window.openRoomFeeModal = async function(roomId) {
     API.get('/api/apartment-fees?room_id=' + roomId),
     API.get('/api/apartment-fees/summary?room_id=' + roomId)
   ]);
-  const feeTypes = ['房租', '押金', '电费', '水费', '物业费', '网费', '退押金', '其他'];
-  const payMethods = ['现金', '微信', '支付宝', '银行转账', '对公', '其他'];
-  const feeStatus = ['已收', '已退', '待收'];
+  const feeTypes = dictOpts('fee_type');
+  const payMethods = dictOpts('pay_method');
+  const feeStatus = dictOpts('fee_status');
   const defaultOperator = current && current.handler ? current.handler : '';
 
   function refresh() { openRoomFeeModal(roomId); }
@@ -631,7 +671,7 @@ window.syncApartmentFees = async function() {
 };
 
 window.setFeeBatch = function(preset) {
-  const feeTypes = ['房租', '押金', '电费', '水费', '物业费', '网费', '退押金', '其他'];
+  const feeTypes = dictOpts('fee_type');
   const map = {
     rent: ['房租', '物业费', '网费'],
     utility: ['电费', '水费'],
@@ -650,9 +690,9 @@ window.setFeeBatch = function(preset) {
 window.editApartmentFee = async function(id, roomId) {
   const fee = (await API.get('/api/apartment-fees?room_id=' + roomId)).find(x => x.id == id);
   if (!fee) return;
-  const feeTypes = ['房租', '押金', '电费', '水费', '物业费', '网费', '退押金', '其他'];
-  const payMethods = ['现金', '微信', '支付宝', '银行转账', '对公', '其他'];
-  const feeStatus = ['已收', '已退', '待收'];
+  const feeTypes = dictOpts('fee_type');
+  const payMethods = dictOpts('pay_method');
+  const feeStatus = dictOpts('fee_status');
   openModal('编辑费用记录', `
     <div class="form-grid">
       <div class="form-row"><label>费用类型</label><select id="f_fee_type">${sel(feeTypes, fee.fee_type)}</select></div>
@@ -907,11 +947,11 @@ window.openCustomerModal = function(c = {}) {
   ).join('');
   openModal(isEdit ? '编辑客户' : '新增客户', `
     <div class="form-grid">
-      <div class="form-row"><label>类型</label><select id="f_type">${sel(['企业','个人'], c.type)}</select></div>
+      <div class="form-row"><label>类型</label><select id="f_type">${sel(dictOpts('customer_type'), c.type)}</select></div>
       <div class="form-row"><label>名称</label><input id="f_name" value="${esc(c.name || '')}"></div>
       <div class="form-row"><label>联系人</label><input id="f_contact" value="${esc(c.contact || '')}"></div>
       <div class="form-row"><label>电话</label><input id="f_phone" value="${esc(c.phone || '')}"></div>
-      <div class="form-row"><label>业务线</label><select id="f_biz_type">${sel(BIZ_TYPES, c.biz_type || '销售')}</select></div>
+      <div class="form-row"><label>业务线</label><select id="f_biz_type">${sel(dictOpts('biz_type'), c.biz_type || '销售')}</select></div>
       <div class="form-row"><label>阶段</label><select id="f_stage">${sel(STAGES, c.stage || '线索')}</select></div>
       <div class="form-row"><label>渠道</label><select id="f_channel_id"><option value="">未选</option>${chOpts}</select></div>
       <div class="form-row"><label>来源</label><select id="f_source">${sel(sources, c.source || '其他')}</select></div>
@@ -982,7 +1022,7 @@ window.openFollowModal = function(customerId) {
   openModal('新增跟进', `
     <div class="form-grid">
       <div class="form-row"><label>跟进日期</label><input id="f_date" type="date" value="${today()}"></div>
-      <div class="form-row"><label>跟进方式</label><select id="f_type">${sel(['电话','拜访','微信','邮件','其他'])}</select></div>
+      <div class="form-row"><label>跟进方式</label><select id="f_type">${sel(dictOpts('follow_method'))}</select></div>
       <div class="form-row" style="grid-column:1/3"><label>跟进内容</label><input id="f_content"></div>
       <div class="form-row"><label>下次计划</label><input id="f_next_plan"></div>
       <div class="form-row"><label>经办人</label><input id="f_operator" value="${esc(ROLE)}"></div>
@@ -1112,7 +1152,7 @@ window.openMarketDetailModal = function(r = {}) {
   const sections = [
     { title: '概况', fields: [
       { key: 'name', label: '竞品/园区名', span: true },
-      { key: 'type', label: '厂房类型', type: 'select', options: ['标准厂房','独栋厂房','分层厂房','钢结构厂房'] },
+      { key: 'type', label: '厂房类型', type: 'select', options: dictOpts('factory_type') },
       { key: 'area', label: '面积(㎡)', type: 'number' },
       { key: 'sale_price', label: '对外售价(元/㎡)', type: 'number' },
       { key: 'rent_price', label: '租金(元/㎡/天)', type: 'number' },
@@ -1199,7 +1239,7 @@ window.openMarketModal = function(r = {}) {
   openModal(isEdit ? '编辑竞品' : '新增竞品', `
     <div class="form-grid">
       <div class="form-row" style="grid-column:1/3"><label>竞品/园区名</label><input id="f_name" value="${esc(r.name || '')}"></div>
-      <div class="form-row"><label>厂房类型</label><select id="f_type">${sel(['标准厂房','独栋厂房','分层厂房','钢结构厂房'], r.type)}</select></div>
+      <div class="form-row"><label>厂房类型</label><select id="f_type">${sel(dictOpts('factory_type'), r.type)}</select></div>
       <div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number" value="${r.area || ''}"></div>
       <div class="form-row"><label>对外售价(元/㎡)</label><input id="f_sale_price" type="number" value="${r.sale_price || ''}"></div>
       <div class="form-row"><label>租金(元/㎡/天)</label><input id="f_rent_price" type="number" value="${r.rent_price || ''}"></div>
@@ -1225,8 +1265,8 @@ async function renderContracts() {
   $('#view').innerHTML = `
     <div class="section-title">合同管理 <span class="sub">租赁 / 销售合同台账</span></div>
     <div class="filters">
-      <select id="fType"><option value="">全部类型</option><option value="租赁">租赁</option><option value="销售">销售</option></select>
-      <select id="fStatus"><option value="">全部状态</option><option value="生效">生效</option><option value="到期">到期</option><option value="退租">退租</option><option value="已售">已售</option></select>
+      <select id="fType">${dictOpts('contract_type', { empty: true }).map(o => `<option value="${o}">${o || '全部类型'}</option>`).join('')}</select>
+      <select id="fStatus">${dictOpts('contract_status', { empty: true }).map(o => `<option value="${o}">${o || '全部状态'}</option>`).join('')}</select>
     </div>
     <div class="table-wrap"><table>
       <thead><tr><th>合同号</th><th>类型</th><th>单元</th><th>客户</th><th>起止日期</th><th>金额</th><th>付款周期</th><th>状态</th><th>操作</th></tr></thead>
@@ -1255,7 +1295,7 @@ window.openContractModal = async function(unitId, type) {
       <div class="form-row"><label>合同号</label><input id="f_code" placeholder="HT-${type === '租赁' ? 'L' : 'S'}-..."></div>
       <div class="form-row" style="grid-column:1/3"><label>客户</label><select id="f_cust">${cOpts}</select></div>
       <div class="form-row"><label>金额</label><input id="f_amt" type="number" value="${type === '租赁' ? (u ? u.rent_price || '' : '') : (u ? u.property_price || '' : '')}"></div>
-      <div class="form-row"><label>付款周期</label><select id="f_cycle">${sel(type === '租赁' ? ['月','季','年'] : ['一次性'])}</select></div>
+      <div class="form-row"><label>付款周期</label><select id="f_cycle">${sel(type === '租赁' ? dictOpts('pay_cycle').filter(x => x !== '一次性') : ['一次性'])}</select></div>
       <div class="form-row"><label>起始日</label><input id="f_sd" type="date" value="${today()}"></div>
       <div class="form-row"><label>结束日</label><input id="f_ed" type="date" value="${type === '租赁' ? '' : today()}"></div>
       <div class="form-row"><label>押金</label><input id="f_dep" type="number" value="0"></div>
@@ -1901,7 +1941,7 @@ async function renderWorkOrders() {
   $('#view').innerHTML = `
     <div class="section-title">工单管理 <span class="sub">报修 / 巡检 / 派工</span></div>
     <div class="filters">
-      <select id="fStatus"><option value="">全部状态</option><option value="待派">待派</option><option value="处理中">处理中</option><option value="已完成">已完成</option></select>
+      <select id="fStatus">${dictOpts('workorder_status', { empty: true }).map(o => `<option value="${o}">${o || '全部状态'}</option>`).join('')}</select>
       ${can('workorder_add') ? '<button class="btn" id="addWo">+ 新增工单</button>' : ''}
     </div>
     <div class="table-wrap"><table>
@@ -1928,12 +1968,12 @@ window.openWorkOrderModal = function(r = {}) {
     <div class="form-grid">
       <div class="form-row"><label>工单号</label><input id="f_code" value="${esc(r.code || '')}"></div>
       <div class="form-row"><label>优先级</label><select id="f_priority">${sel(['普通','紧急','特急'], r.priority || '普通')}</select></div>
-      <div class="form-row"><label>类型</label><select id="f_type">${sel(['报修','巡检','投诉','其他'], r.type)}</select></div>
+      <div class="form-row"><label>类型</label><select id="f_type">${sel(dictOpts('workorder_type'), r.type)}</select></div>
       <div class="form-row"><label>关联单元</label><select id="f_unit_id"><option value="">未关联</option>${unitOpts}</select></div>
       <div class="form-row"><label>报修人</label><input id="f_reporter" value="${esc(r.reporter || '')}"></div>
       <div class="form-row"><label>处理人</label><input id="f_assignee" value="${esc(r.assignee || '')}"></div>
       <div class="form-row" style="grid-column:1/3"><label>描述</label><input id="f_desc" value="${esc(r.description || '')}"></div>
-      <div class="form-row"><label>状态</label><select id="f_status">${sel(['待派','处理中','已完成'], r.status || '待派')}</select></div>
+      <div class="form-row"><label>状态</label><select id="f_status">${sel(dictOpts('workorder_status'), r.status || '待派')}</select></div>
     </div>`, async () => {
     const body = {
       code: $('#f_code').value, type: $('#f_type').value, reporter: $('#f_reporter').value,
@@ -2040,5 +2080,6 @@ document.addEventListener('DOMContentLoaded', () => {
   ROLES.forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; roleSel.appendChild(o); });
   roleSel.value = ROLE;
   roleSel.onchange = () => { ROLE = roleSel.value; setView(CURRENT_VIEW); };
-  setView('dashboard');
+  // 先拉取数据字典，再渲染首屏（字典失败会自动回退内置默认值）
+  loadDict().finally(() => setView('dashboard'));
 });

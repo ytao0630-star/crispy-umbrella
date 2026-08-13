@@ -242,6 +242,7 @@ def init_db():
     conn.commit()
     # 兼容性：旧库自动加字段、加表
     _ensure_columns(conn)
+    ensure_data_dict(conn)
     _ensure_table_deposits(conn)
     _ensure_sys_tables(conn)
     _ensure_market_seed(conn)
@@ -2994,6 +2995,38 @@ def main():
     with socketserver.ThreadingTCPServer(("0.0.0.0", port), Handler) as httpd:
         print(f"园区资管系统已启动 -> http://localhost:{port}  (数据文件: {DB_PATH})")
         httpd.serve_forever()
+
+
+def ensure_data_dict(conn):
+    """启动补齐数据字典业务枚举，使前端下拉可配置化（对齐各页面硬编码枚举）。"""
+    seed = {
+        "unit_status": ["空置", "在租", "在售", "已售", "自持", "装修中", "锁定"],
+        "room_status": ["空置", "已预订", "在住", "待退房"],
+        "room_category": ["单人间", "双人间", "四人间", "套房"],
+        "contract_type": ["租赁", "销售"],
+        "contract_status": ["生效", "到期", "退租", "已售"],
+        "biz_type": ["销售", "租赁"],
+        "customer_type": ["企业", "个人"],
+        "fee_type": ["房租", "押金", "电费", "水费", "物业费", "网费", "退押金", "其他"],
+        "pay_method": ["现金", "微信", "支付宝", "银行转账", "对公", "其他"],
+        "fee_status": ["已收", "已退", "待收"],
+        "apartment_fee_status": ["待缴", "已缴", "欠费"],
+        "bill_item": ["租金", "物业费", "水电费", "房款"],
+        "factory_type": ["标准厂房", "独栋厂房", "分层厂房", "钢结构厂房"],
+        "follow_method": ["电话", "拜访", "微信", "邮件", "其他"],
+        "workorder_type": ["报修", "投诉", "咨询", "巡检", "其他"],
+        "workorder_status": ["待派", "处理中", "已完成"],
+        "asset_type": ["厂房", "公寓"],
+        "pay_cycle": ["月", "季", "年", "一次性"],
+    }
+    cur = conn.cursor()
+    for t, names in seed.items():
+        for i, name in enumerate(names, 1):
+            ex = cur.execute("SELECT 1 FROM data_dict WHERE type=? AND code=?", (t, name)).fetchone()
+            if not ex:
+                cur.execute("INSERT INTO data_dict (type, code, name, sort, enabled) VALUES (?,?,?,?,?)",
+                            (t, name, name, i, 1))
+    conn.commit()
 
 
 if __name__ == "__main__":
