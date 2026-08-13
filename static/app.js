@@ -223,8 +223,9 @@ async function renderAssets() {
 window.editUnit = async function(id) {
   const u = CACHE.units.find(x => x.id == id);
   openModal('编辑单元', `
-    <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code" value="${esc(u.code)}"></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number" value="${u.area || ''}"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number" value="${u.rent_price || ''}"></div><div class="form-row"><label>售价</label><input id="f_price" type="number" value="${u.property_price || ''}"></div><div class="form-row"><label>状态</label><select id="f_status">${sel(['空置','在租','在售','已售','装修中','锁定'], u.status)}</select></div></div>`, async () => {
-    await API.put('/api/units/' + id, { code: $('#f_code').value, area: +$('#f_area').value || 0, rent_price: +$('#f_rent').value || 0, property_price: +$('#f_price').value || 0, status: $('#f_status').value });
+    <div class="form-grid"><div class="form-row"><label>单元编号</label><input id="f_code" value="${esc(u.code)}"></div><div class="form-row"><label>面积(㎡)</label><input id="f_area" type="number" value="${u.area || ''}"></div><div class="form-row"><label>月租金</label><input id="f_rent" type="number" value="${u.rent_price || ''}"></div><div class="form-row"><label>售价</label><input id="f_price" type="number" value="${u.property_price || ''}"></div><div class="form-row"><label>状态</label><select id="f_status">${sel(['空置','在租','在售','已售','装修中','锁定'], u.status)}</select></div></div>
+    <div class="form-row" style="grid-column:1/3"><label>钥匙信息</label><textarea id="f_keys" rows="2" placeholder="如：大门钥匙2把 + 配电房钥匙1把">${esc(u.key_info || '')}</textarea></div>`, async () => {
+    await API.put('/api/units/' + id, { code: $('#f_code').value, area: +$('#f_area').value || 0, rent_price: +$('#f_rent').value || 0, property_price: +$('#f_price').value || 0, status: $('#f_status').value, key_info: $('#f_keys').value || '' });
     closeModal(); toast('单元已更新'); renderAssets();
   });
 };
@@ -712,8 +713,8 @@ async function _renderFactory(kind) {
       ? `<option value="">全部状态</option><option value="空置">空置</option><option value="在租">在租</option>`
       : `<option value="">全部状态</option><option value="空置">空置</option><option value="在售">在售</option><option value="已售">已售</option>`;
     const headers = isRental
-      ? `<th>单元</th><th>楼栋</th><th>面积(㎡)</th><th>月租</th><th>状态</th><th>当前租户</th><th>租赁起止</th><th>操作</th>`
-      : `<th>单元</th><th>楼栋</th><th>面积(㎡)</th><th>售价</th><th>状态</th><th>当前买方</th><th>签约日期</th><th>回款状态</th><th>操作</th>`;
+      ? `<th>单元</th><th>楼栋</th><th>面积(㎡)</th><th>月租</th><th>押金</th><th>免租期(约)</th><th>钥匙</th><th>状态</th><th>当前租户</th><th>租赁起止</th><th class="ops">操作</th>`
+      : `<th>单元</th><th>楼栋</th><th>面积(㎡)</th><th>售价</th><th>状态</th><th>当前买方</th><th>签约日期</th><th>回款状态</th><th class="ops">操作</th>`;
 
     $('#factoryViewBody').innerHTML = `
       <div class="filters"><select id="fStatus">${statusOptions}</select></div>
@@ -724,18 +725,26 @@ async function _renderFactory(kind) {
       const isLease = ct.type === '租赁';
       const isSale = ct.type === '销售';
       let ops = '';
+      if (can('unit_edit')) ops += `<button class="btn sm ghost" onclick="editUnit(${u.id})">编辑</button> `;
       if (u.status === '空置' && can('contracts_add')) {
         ops += `<button class="btn sm ghost" onclick="openContractModal(${u.id},'${isRental?'租赁':'销售'}')">${isRental?'租赁':'销售'}</button> `;
+      }
+      if (isRental && isLease && ct.status === '生效' && can('lease_terminate')) {
+        ops += `<button class="btn sm red" onclick="terminateContract(${ct.id})">退租结算</button> `;
       }
       if (can('contracts_add')) ops += `<button class="btn sm ghost" onclick="openUnitRecords(${u.id})">单位记录</button>`;
 
       if (isRental) {
         const range = isLease && ct.start_date ? `${esc(ct.start_date)} ~ ${esc(ct.end_date || '至今')}` : '-';
         const tenant = u.customer_name || (isLease ? '在租' : '-');
+        const deposit = (isLease && ct.deposit) ? yuan(ct.deposit) : '-';
+        const freeDays = (isLease && ct.free_days) ? `约 ${ct.free_days} 天` : '-';
+        const keys = u.key_info ? esc(u.key_info) : '-';
         return `<tr>
           <td><b>${esc(u.code)}</b></td><td>${esc(bname(u.building_id))}</td><td>${fmt(u.area)}</td>
-          <td>${u.rent_price ? yuan(u.rent_price) : '-'}</td><td>${tag(u.status)}</td>
-          <td>${esc(tenant)}</td><td>${esc(range)}</td><td>${ops || '-'}</td>
+          <td>${u.rent_price ? yuan(u.rent_price) : '-'}</td><td>${deposit}</td><td>${freeDays}</td><td>${keys}</td>
+          <td>${tag(u.status)}</td>
+          <td>${esc(tenant)}</td><td>${esc(range)}</td><td class="ops">${ops || '-'}</td>
         </tr>`;
       } else {
         const saleDate = isSale && ct.start_date ? esc(ct.start_date) : '-';
@@ -744,10 +753,10 @@ async function _renderFactory(kind) {
         return `<tr>
           <td><b>${esc(u.code)}</b></td><td>${esc(bname(u.building_id))}</td><td>${fmt(u.area)}</td>
           <td>${u.property_price ? yuan(u.property_price) : '-'}</td><td>${tag(u.status)}</td>
-          <td>${esc(buyer)}</td><td>${esc(saleDate)}</td><td>${esc(payStatus)}</td><td>${ops || '-'}</td>
+          <td>${esc(buyer)}</td><td>${esc(saleDate)}</td><td>${esc(payStatus)}</td><td class="ops">${ops || '-'}</td>
         </tr>`;
       }
-    }).join('') || `<tr><td colspan="${isRental?8:9}" class="empty">无记录</td></tr>`;
+    }).join('') || `<tr><td colspan="${isRental?11:9}" class="empty">无记录</td></tr>`;
     if ($('#fStatus')) $('#fStatus').onchange = renderList;
   }
 
@@ -1250,11 +1259,13 @@ window.openContractModal = async function(unitId, type) {
       <div class="form-row"><label>起始日</label><input id="f_sd" type="date" value="${today()}"></div>
       <div class="form-row"><label>结束日</label><input id="f_ed" type="date" value="${type === '租赁' ? '' : today()}"></div>
       <div class="form-row"><label>押金</label><input id="f_dep" type="number" value="0"></div>
+      <div class="form-row"><label>免租期(天)</label><input id="f_free" type="number" min="0" value="0" placeholder="协商约数，如 60"></div>
     </div>`, async () => {
     await API.post('/api/contracts', {
       code: $('#f_code').value, type, unit_id: unitId,
       customer_id: +$('#f_cust').value, amount: +$('#f_amt').value || 0, pay_cycle: $('#f_cycle').value,
       start_date: $('#f_sd').value, end_date: $('#f_ed').value, deposit: +$('#f_dep').value || 0,
+      free_days: +$('#f_free').value || 0,
       status: type === '租赁' ? '生效' : '已售', sign_date: today(), note: type,
     });
     closeModal(); toast('合同已创建'); refreshCurrent();
@@ -1279,6 +1290,7 @@ window.terminateContract = async function(id) {
       <div class="form-row"><label>退还金额</label><input id="t_dep_amt" type="number" min="0" step="0.01" value="${collected}" ${collected > 0 ? '' : 'disabled'}></div>
       <div class="form-row"><label>末月租金</label><input id="t_rent" type="number" min="0" step="0.01" placeholder="可选"></div>
       <div class="form-row"><label>末月水电</label><input id="t_util" type="number" min="0" step="0.01" placeholder="可选"></div>
+      <div class="form-row" style="grid-column:1/3"><label>钥匙交接说明<i style="color:var(--muted);font-weight:normal">（灵活：可归还 / 租户留存 / 丢失，留空则不记录）</i></label><textarea id="t_keys" rows="2" placeholder="如：大门钥匙2把已归还；或 钥匙由租户留存；或 配电钥匙1把丢失"></textarea></div>
     </div>`, async () => {
     const action = document.querySelector('input[name=t_dep]:checked').value;
     const body = {
@@ -1288,6 +1300,7 @@ window.terminateContract = async function(id) {
       deposit_amount: action === '退' ? parseFloat($('#t_dep_amt').value || 0) : 0,
       final_rent: $('#t_rent').value ? parseFloat($('#t_rent').value) : null,
       final_utility: $('#t_util').value ? parseFloat($('#t_util').value) : null,
+      key_handover: $('#t_keys').value || '',
     };
     await API.post('/api/contracts/' + id + '/terminate', body);
     closeModal(); toast('已退租并完成结算'); renderContracts();

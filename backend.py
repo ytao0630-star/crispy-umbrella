@@ -276,6 +276,8 @@ def _ensure_columns(conn):
         ("contracts", "actual_end_date", "TEXT"),
         ("contracts", "move_out_reason", "TEXT"),
         ("contracts", "original_contract_id", "INTEGER"),
+        ("contracts", "key_handover", "TEXT"),
+        ("units", "key_info", "TEXT"),
         ("users", "username", "TEXT"),
         ("users", "password", "TEXT"),
         ("users", "phone", "TEXT"),
@@ -2760,8 +2762,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             deposit_status = "不退"
         # 更新合同状态
         c.execute(
-            "UPDATE contracts SET status='退租', actual_end_date=?, move_out_reason=?, deposit_status=? WHERE id=?",
-            (move_out, body.get("move_out_reason", "到期退租"), deposit_status, cid))
+            "UPDATE contracts SET status='退租', actual_end_date=?, move_out_reason=?, deposit_status=?, key_handover=? WHERE id=?",
+            (move_out, body.get("move_out_reason", "到期退租"), deposit_status, body.get("key_handover") or None, cid))
         # 末月租金按天结算（如果设置了金额）
         final_rent = body.get("final_rent")
         if final_rent is not None:
