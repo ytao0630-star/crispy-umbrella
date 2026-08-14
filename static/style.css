@@ -332,3 +332,52 @@ table.perm-tbl th, table.perm-tbl td { border: 1px solid #e2e8f0; padding: 9px 1
 table.perm-tbl th { background: #f1f5f9; color: #475569; font-weight: 600; }
 table.perm-tbl td:first-child { text-align: left; font-weight: 600; color: var(--text); }
 table.perm-tbl input[type=checkbox] { width: 17px; height: 17px; cursor: pointer; }
+
+/* ===== 菜单管理：树形 ===== */
+.tree-toggle { display: inline-block; width: 20px; cursor: pointer; color: #64748b; font-size: 11px; user-select: none; text-align: center; }
+.tree-toggle:hover { color: #334155; }
+.tree-indent { display: inline-block; width: 20px; }
+.tree-name { font-weight: 500; }
+.menu-icon { font-size: 15px; }
+.sort-btns { display: inline-flex; align-items: center; gap: 3px; }
+.sort-num { font-size: 12px; min-width: 18px; text-align: center; color: #64748b; }
+.btn.xs { padding: 1px 6px; font-size: 11.5px; height: 22px; line-height: 20px; }
+.menu-children td { padding: 0 !important; background: #fafbfc; }
+.menu-children .inner-table { width: 100%; border: none; }
+.menu-children .inner-table th { display: none; }
+
+/* ===== 开关 Switch ===== */
+.switch { position: relative; display: inline-block; width: 40px; height: 22px; vertical-align: middle; }
+.switch.sm { width: 34px; height: 19px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; background: #cbd5e1; border-radius: 11px; transition: 0.2s; cursor: pointer; }
+.slider.sm { border-radius: 9.5px; }
+.slider::before { content:''; position: absolute; height: 17px; width: 17px; left: 2.5px; bottom: 2.5px; background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.slider.sm::before { height: 14.5px; width: 14.5px; left: 2.25px; bottom: 2.25px; }
+.switch input:checked + .slider { background: #3b82f6; }
+.switch input:checked + .slider::before { transform: translateX(18px); }
+.switch input:checked + .slider.sm::before { transform: translateX(15px; }
+
+/* ===== 系统规则：行内编辑 ===== */
+.inline-edit { border: 1px solid transparent; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-family: inherit; background: transparent; width: 100%; box-sizing: border-box; transition: border-color 0.15s; }
+.inline-edit:focus { outline: none; border-color: #3b82f6; background: #fff; box-shadow: 0 0 0 2px rgba(59,130,246,.1); }
+.inline-edit.wide { min-width: 180px; }
+.rule-save-hint { font-size: 11.5px; white-space: nowrap; }
+.rule-save-hint.saving { color: #f59e0b; }
+.rule-save-hint.saved { color: #22c55e; }
+.rule-save-hint.error { color: #ef4444; }
+
+/* ===== 数据字典：分组 ===== */
+.dict-groups { margin-top: 10px; }
+.dict-group { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+.dict-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #f8fafc; cursor: pointer; user-select: none; }
+.dict-group-head:hover { background: #f1f5f9; }
+.dict-group-title { font-weight: 600; font-size: 13.5px; color: var(--text); }
+.dict-group-count { font-size: 12px; color: #94a3b8; }
+.dict-toggle-icon { margin-left: auto; font-size: 11px; color: #94a3b8; transition: transform 0.2s; }
+.dict-group.collapsed .dict-toggle-icon { transform: rotate(-90deg); }
+.dict-group.collapsed .dict-group-body { display: none; }
+.dict-group-body { padding: 8px 12px; }
+.dict-group-body table { width: 100%; border-collapse: collapse; }
+.dict-group-body th { background: #f1f5f9; color: #64748b; font-weight: 600; font-size: 12px; padding: 6px 10px; text-align: left; }
+.dict-group-body td { padding: 5px 10px; font-size: 13px; border-bottom: 1px solid #f1f5f9; }

@@ -2246,10 +2246,27 @@ window.delUser = async function(id, name) {
 
 async function renderSysDepts() {
   const rows = await API.get('/api/departments');
-  $('#sysView').innerHTML = `<div class="btn-row"><button class="btn" id="addD">+ 新增部门</button></div><div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>负责人</th><th>排序</th></tr></thead><tbody id="dTable"></tbody></table></div>`;
-  $('#dTable').innerHTML = rows.map(d => `<tr><td>${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.manager || '-')}</td><td>${d.sort || 0}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">无记录</td></tr>';
+  $('#sysView').innerHTML = `
+    <div class="btn-row"><button class="btn" id="addD">+ 新增部门</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>编码</th><th>名称</th><th>负责人</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="dTable"></tbody>
+    </table></div>`;
+  $('#dTable').innerHTML = rows.map(d => `<tr>
+    <td>${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.manager || '-')}</td><td>${d.sort || 0}</td>
+    <td><button class="btn sm ghost" onclick="editDept(${d.id})">编辑</button><button class="btn sm danger" onclick="delDept(${d.id})">删除</button></td>
+  </tr>`).join('') || '<tr><td colspan="5" class="empty">无记录</td></tr>';
   $('#addD').onclick = () => openDeptModal();
 }
+window.editDept = function(id) { API.get('/api/departments').then(rows => { const d = rows.find(x => x.id == id); if (d) openDeptModal(d); }); };
+window.delDept = async function(id) {
+  const rows = await API.get('/api/departments');
+  const d = rows.find(x => x.id === id);
+  if (!d) return;
+  if (!confirm(`确定删除部门「${d.name}」？`)) return;
+  await API.delete('/api/departments/' + id + '?operator=系统管理员');
+  toast('已删除'); renderSysDepts();
+};
 window.openDeptModal = function(d = {}) {
   const isEdit = !!d.id;
   openModal(isEdit ? '编辑部门' : '新增部门', `<div class="form-grid"><div class="form-row"><label>编码</label><input id="f_code" value="${esc(d.code || '')}"></div><div class="form-row"><label>名称</label><input id="f_name" value="${esc(d.name || '')}"></div><div class="form-row"><label>负责人</label><input id="f_manager" value="${esc(d.manager || '')}"></div><div class="form-row"><label>排序</label><input id="f_sort" type="number" value="${d.sort || 0}"></div></div>`, async () => {
@@ -2261,9 +2278,41 @@ window.openDeptModal = function(d = {}) {
 
 async function renderSysRoles() {
   const rows = await API.get('/api/sys_roles');
-  $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>描述</th><th>排序</th></tr></thead><tbody id="rTable"></tbody></table></div>`;
-  $('#rTable').innerHTML = rows.map(r => `<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td><td>${esc(r.description || '-')}</td><td>${r.sort || 0}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">无记录</td></tr>';
+  $('#sysView').innerHTML = `
+    <div class="btn-row"><button class="btn" id="addR">+ 新增角色</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>编码</th><th>名称</th><th>描述</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="rTable"></tbody>
+    </table></div>`;
+  $('#rTable').innerHTML = rows.map(r => `<tr>
+    <td class="mono">${esc(r.code)}</td><td>${esc(r.name)}</td><td>${esc(r.description || '-')}</td><td>${r.sort || 0}</td>
+    <td><button class="btn sm ghost" onclick="editRole(${r.id})">编辑</button><button class="btn sm danger" onclick="delRole(${r.id})">删除</button></td>
+  </tr>`).join('') || '<tr><td colspan="5" class="empty">无记录</td></tr>';
+  $('#addR').onclick = () => openRoleModal();
 }
+window.openRoleModal = function(r = {}) {
+  const isEdit = !!r.id;
+  openModal(isEdit ? '编辑角色' : '新增角色', `
+    <div class="form-grid">
+      <div class="form-row"><label>编码</label><input id="fr_code" value="${esc(r.code || '')}" ${isEdit?'readonly':''}></div>
+      <div class="form-row"><label>名称</label><input id="fr_name" value="${esc(r.name || '')}"></div>
+      <div class="form-row"><label>描述</label><input id="fr_desc" value="${esc(r.description || '')}"></div>
+      <div class="form-row"><label>排序</label><input id="fr_sort" type="number" value="${r.sort ?? (isEdit?0:99)}"></div>
+    </div>`, async () => {
+    const body = { code: $('#fr_code').value, name: $('#fr_name').value, description: $('#fr_desc').value, sort: +$('#fr_sort').value || 0 };
+    if (isEdit) await API.put('/api/sys_roles/' + r.id, body); else await API.post('/api/sys_roles', body);
+    closeModal(); toast('已保存'); renderSysRoles();
+  });
+};
+window.editRole = function(id) { API.get('/api/sys_roles').then(rows => { const r = rows.find(x => x.id == id); if (r) openRoleModal(r); }); };
+window.delRole = async function(id) {
+  const rows = await API.get('/api/sys_roles');
+  const r = rows.find(x => x.id === id);
+  if (!r) return;
+  if (!confirm(`确定删除角色「${r.name}」？关联权限也将被清除。`)) return;
+  await API.delete('/api/sys_roles/' + id + '?operator=系统管理员');
+  toast('已删除'); renderSysRoles();
+};
 async function renderSysCalendar() {
   const [y, m] = CAL_MONTH.split('-').map(Number);
   const events = await API.get('/api/calendar-events?month=' + CAL_MONTH);
@@ -2362,21 +2411,187 @@ async function loadPermMatrix() {
     };
   });
 }
+/* ── 菜单管理：树形 CRUD + 排序 + 显隐 ── */
+let MENU_DATA = [];
 async function renderSysMenus() {
-  const rows = await API.get('/api/sys_menus');
-  $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>图标</th><th>父级</th><th>排序</th><th>可见</th></tr></thead><tbody id="mTable"></tbody></table></div>`;
-  $('#mTable').innerHTML = rows.map(m => `<tr><td>${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.icon || '-')}</td><td>${m.parent_id || '-'}</td><td>${m.sort || 0}</td><td>${m.visible ? '是' : '否'}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">无记录</td></tr>';
+  MENU_DATA = await API.get('/api/sys_menus');
+  const tree = buildMenuTree(MENU_DATA);
+  $('#sysView').innerHTML = `
+    <div class="btn-row"><button class="btn" id="addM">+ 新增菜单</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th style="width:40px"></th><th>名称</th><th>编码</th><th>图标</th><th>排序</th><th>可见</th><th style="width:140px">操作</th></tr></thead>
+      <tbody id="mTable"></tbody>
+    </table></div>`;
+  $('#mTable').innerHTML = renderMenuRows(tree, 0);
+  $('#addM').onclick = () => openMenuModal();
 }
+function buildMenuTree(rows) {
+  const map = {}, roots = [];
+  rows.forEach(r => { map[r.id] = { ...r, children: [] }; });
+  rows.forEach(r => { const n = map[r.id]; if (r.parent_id && map[r.parent_id]) map[r.parent_id].children.push(n); else roots.push(n); });
+  roots.sort((a,b) => (a.sort||0)-(b.sort||0)||a.id-b.id);
+  roots.forEach(n => sortChildren(n));
+  return roots;
+}
+function sortChildren(node) {
+  node.children.sort((a,b) => (a.sort||0)-(b.sort||0)||a.id-b.id);
+  node.children.forEach(sortChildren);
+}
+function renderMenuRows(nodes, depth) {
+  return nodes.map(n => {
+    const pad = 24 * depth;
+    const hasChildren = n.children && n.children.length > 0;
+    let html = `<tr data-id="${n.id}">
+      <td>${hasChildren ? '<span class="tree-toggle" onclick="toggleMenuRow('+n.id+')">▼</span>' : '<span class="tree-indent"></span>'}</td>
+      <td style="padding-left:${pad}px"><span class="tree-name">${esc(n.name)}</span></td>
+      <td class="mono">${esc(n.code)}</td>
+      <td>${n.icon ? '<span class="menu-icon">'+esc(n.icon)+'</span>' : '-'}</td>
+      <td>
+        <span class="sort-btns">
+          <button class="btn xs ghost" onclick="moveMenu(${n.id},-1)" title="上移">▲</button>
+          <span class="sort-num">${n.sort || 0}</span>
+          <button class="btn xs ghost" onclick="moveMenu(${n.id},1)" title="下移">▼</button>
+        </span>
+      </td>
+      <td><label class="switch"><input type="checkbox" ${n.visible ? 'checked' : ''} onchange="toggleMenuVis(${n.id},this.checked)"><span class="slider"></span></label></td>
+      <td>
+        <button class="btn sm ghost" onclick="editMenu(${n.id})">编辑</button>
+        <button class="btn sm danger" onclick="delMenu(${n.id})">删除</button>
+      </td></tr>`;
+    if (hasChildren) html += `<tr class="menu-children" id="mc-${n.id}"><td colspan="7"><table class="inner-table"><tbody>${renderMenuRows(n.children, depth+1)}</tbody></table></td></tr>`;
+    return html;
+  }).join('');
+}
+window.toggleMenuRow = function(id) {
+  const el = $('#mc-'+id);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+};
+window.toggleMenuVis = async function(id, val) {
+  await API.put('/api/sys_menus/' + id, { visible: val ? 1 : 0 });
+  toast(val ? '已显示' : '已隐藏');
+};
+window.moveMenu = async function(id, dir) {
+  const idx = MENU_DATA.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const sibling = MENU_DATA.find(x => x.parent_id === MENU_DATA[idx].parent_id && (dir > 0 ? x.sort > (MENU_DATA[idx].sort||0) : x.sort < (MENU_DATA[idx].sort||0)));
+  if (!sibling) { toast('已达边界'); return; }
+  const s = MENU_DATA[idx].sort || 0;
+  await API.put('/api/sys_menus/' + id, { sort: sibling.sort });
+  await API.put('/api/sys_menus/' + sibling.id, { sort: s });
+  renderSysMenus();
+};
+window.openMenuModal = function(m = {}) {
+  const isEdit = !!m.id;
+  const parentOpts = MENU_DATA.filter(x => x.id !== m.id).map(x => `<option value="${x.id}" ${(m.parent_id===x.id)?'selected':''}>${'─'.repeat((m.parent_id&&MENU_DATA.find(p=>p.id===x.parent_id)?1:0))}${esc(x.name)}</option>`).join('');
+  openModal(isEdit ? '编辑菜单' : '新增菜单', `
+    <div class="form-grid">
+      <div class="form-row"><label>编码</label><input id="fm_code" value="${esc(m.code || '')}" ${isEdit?'readonly':''}></div>
+      <div class="form-row"><label>名称</label><input id="fm_name" value="${esc(m.name || '')}"></div>
+      <div class="form-row"><label>图标(emoji)</label><input id="fm_icon" value="${esc(m.icon || '')}" placeholder="如 📊 🔧 👥"></div>
+      <div class="form-row"><label>父级菜单</label><select id="fm_parent"><option value="">（顶级菜单）</option>${parentOpts}</select></div>
+      <div class="form-row"><label>排序</label><input id="fm_sort" type="number" value="${m.sort ?? (isEdit?0:MENU_DATA.length)}"></div>
+      <div class="form-row"><label>可见</label><select id="fm_visible"><option value="1" ${(!isEdit||m.visible)!=='0'?'selected':''}>是</option><option value="0" ${isEdit&&m.visible==='0'?'selected':''}>否</option></select></div>
+    </div>`, async () => {
+    const body = { code: $('#fm_code').value, name: $('#fm_name').value, icon: $('#fm_icon').value, parent_id: $('#fm_parent').value ? +$('#fm_parent').value : null, sort: +$('#fm_sort').value || 0, visible: $('#fm_visible').value === '1' ? 1 : 0 };
+    if (isEdit) await API.put('/api/sys_menus/' + m.id, body); else await API.post('/api/sys_menus', body);
+    closeModal(); toast('已保存'); renderSysMenus();
+  });
+};
+window.editMenu = function(id) { const m = MENU_DATA.find(x => x.id === id); if (m) openMenuModal(m); };
+window.delMenu = async function(id) {
+  const m = MENU_DATA.find(x => x.id === id);
+  if (!m) return;
+  const hasChild = MENU_DATA.some(x => x.parent_id === id);
+  if (hasChild && !confirm('该菜单下有子菜单，删除后子菜单将变为顶级。确定继续？')) return;
+  if (!confirm(`确定删除菜单「${m.name}」？`)) return;
+  await API.delete('/api/sys_menus/' + id + '?operator=系统管理员');
+  toast('已删除'); renderSysMenus();
+};
 async function renderSysRules() {
   const rows = await API.get('/api/system_rules');
-  $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>值</th><th>说明</th></tr></thead><tbody id="ruleTable"></tbody></table></div>`;
-  $('#ruleTable').innerHTML = rows.map(r => `<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td><td>${esc(r.value || '-')}</td><td>${esc(r.description || '-')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">无记录</td></tr>';
+  $('#sysView').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>编码</th><th>名称</th><th>值</th><th>说明</th><th>操作</th></tr></thead>
+    <tbody id="ruleTable"></tbody>
+  </table></div>`;
+  $('#ruleTable').innerHTML = rows.map(r => `<tr data-id="${r.id}">
+    <td class="mono">${esc(r.code)}</td><td>${esc(r.name)}</td>
+    <td><input class="inline-edit" id="rv_${r.id}" value="${esc(r.value ?? '')}" onchange="saveRule(${r.id},'value',this.value)"></td>
+    <td><input class="inline-edit wide" id="rd_${r.id}" value="${esc(r.description ?? '')}" onchange="saveRule(${r.id},'description',this.value)"></td>
+    <td><span class="rule-save-hint" id="rh_${r.id}"></span></td>
+  </tr>`).join('') || '<tr><td colspan="5" class="empty">无记录</td></tr>';
 }
+window.saveRule = async function(id, field, val) {
+  const hint = $('#rh_' + id);
+  hint.textContent = '保存中...';
+  hint.className = 'rule-save-hint saving';
+  try {
+    await API.put('/api/system_rules/' + id, { [field]: val });
+    hint.textContent = '已保存 ✓';
+    hint.className = 'rule-save-hint saved';
+    setTimeout(() => { hint.textContent = ''; }, 2000);
+  } catch(e) {
+    hint.textContent = '保存失败 ✗';
+    hint.className = 'rule-save-hint error';
+  }
+};
+/* ── 数据字典：按类型分组 + CRUD ── */
+let DICT_DATA = [];
+const DICT_TYPE_LABELS = { 'status':'状态', 'type':'类型', 'category':'分类', 'factory_type':'厂房类型', 'feeType':'费用类型', 'payMethod':'支付方式', 'feeStatus':'收费状态', 'inspection_category':'巡检类别', 'equipment_type':'设备类型', 'inspection_cycle':'巡检周期', 'equipment_status':'设备状态', 'inspection_task_status':'巡检任务状态' };
 async function renderSysDict() {
-  const rows = await API.get('/api/data_dict');
-  $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>类型</th><th>编码</th><th>名称</th><th>排序</th><th>启用</th></tr></thead><tbody id="dictTable"></tbody></table></div>`;
-  $('#dictTable').innerHTML = rows.map(d => `<tr><td>${esc(d.type)}</td><td>${esc(d.code)}</td><td>${esc(d.name)}</td><td>${d.sort || 0}</td><td>${d.enabled ? '是' : '否'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">无记录</td></tr>';
+  DICT_DATA = await API.get('/api/data_dict');
+  const groups = {};
+  DICT_DATA.forEach(d => { (groups[d.type] = groups[d.type] || []).push(d); });
+  Object.values(groups).forEach(g => g.sort((a,b) => (a.sort||0)-(b.sort||0)));
+  const types = Object.keys(groups).sort();
+  let html = `<div class="btn-row"><button class="btn" id="addDict">+ 新增字典项</button></div><div class="dict-groups">`;
+  types.forEach(t => {
+    const items = groups[t];
+    const label = DICT_TYPE_LABELS[t] || t;
+    html += `<div class="dict-group">
+      <div class="dict-group-head" onclick="this.parentElement.classList.toggle('collapsed')"><span class="dict-group-title">${esc(label)}</span><span class="dict-group-count">${items.length} 项</span><span class="dict-toggle-icon">▼</span></div>
+      <div class="dict-group-body"><table>
+        <thead><tr><th>编码</th><th>名称</th><th>排序</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody>${items.map(d => `<tr>
+          <td class="mono">${esc(d.code)}</td><td>${esc(d.name)}</td><td>${d.sort || 0}</td>
+          <td><label class="switch sm"><input type="checkbox" ${d.enabled ? 'checked' : ''} onchange="toggleDict(${d.id},this.checked)"><span class="slider sm"></span></label></td>
+          <td><button class="btn xs ghost" onclick="editDictItem(${d.id})">编辑</button><button class="btn xs danger" onclick="delDictItem(${d.id})">删除</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div></div>`;
+  });
+  html += '</div>';
+  if (!types.length) html += '<p class="empty">无记录</p>';
+  $('#sysView').innerHTML = html;
+  $('#addDict').onclick = () => openDictModal();
 }
+window.toggleDict = async function(id, val) {
+  await API.put('/api/data_dict/' + id, { enabled: val ? 1 : 0 });
+  toast(val ? '已启用' : '已禁用');
+};
+window.openDictModal = function(d = {}) {
+  const isEdit = !!d.id;
+  const typeOpts = Object.keys(DICT_TYPE_LABELS).map(k => `<option value="${k}" ${(d.type===k)?'selected':''}>${DICT_TYPE_LABELS[k]} (${k})</option>`).join('');
+  openModal(isEdit ? '编辑字典项' : '新增字典项', `
+    <div class="form-grid">
+      <div class="form-row"><label>类型</label><select id="fd_type">${typeOpts}</select></div>
+      <div class="form-row"><label>编码</label><input id="fd_code" value="${esc(d.code || '')}" ${isEdit?'readonly':''}></div>
+      <div class="form-row"><label>名称</label><input id="fd_name" value="${esc(d.name || '')}"></div>
+      <div class="form-row"><label>排序</label><input id="fd_sort" type="number" value="${d.sort ?? (isEdit?0:99)}"></div>
+      <div class="form-row"><label>启用</label><select id="fd_enabled"><option value="1" ${(!isEdit||d.enabled)!=='0'?'selected':''}>是</option><option value="0" ${isEdit&&d.enabled==='0'?'selected':''}>否</option></select></div>
+    </div>`, async () => {
+    const body = { type: $('#fd_type').value, code: $('#fd_code').value, name: $('#fd_name').value, sort: +$('#fd_sort').value || 0, enabled: $('#fd_enabled').value === '1' ? 1 : 0 };
+    if (isEdit) await API.put('/api/data_dict/' + d.id, body); else await API.post('/api/data_dict', body);
+    closeModal(); toast('已保存'); renderSysDict();
+  });
+};
+window.editDictItem = function(id) { const d = DICT_DATA.find(x => x.id === id); if (d) openDictModal(d); };
+window.delDictItem = async function(id) {
+  const d = DICT_DATA.find(x => x.id === id);
+  if (!d) return;
+  if (!confirm(`确定删除字典项「${d.name}」？`)) return;
+  await API.delete('/api/data_dict/' + id + '?operator=系统管理员');
+  toast('已删除'); renderSysDict();
+};
 async function renderSysAudit() {
   const rows = await API.get('/api/audit_logs');
   $('#sysView').innerHTML = `<div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>动作</th><th>模块</th><th>详情</th></tr></thead><tbody id="auditTable"></tbody></table></div>`;
