@@ -1047,17 +1047,31 @@ def seed_demo(conn):
                      VALUES (?,?,?,?,?,?,?,?)""",
                   (u[0], u[1], u[2], u[3], u[4], u[5], u[6], "启用"))
 
-    # 权限配置（演示：给每个角色分配资源）
-    resources = ["dashboard", "assets", "leases", "factories", "customers",
-                 "contracts", "billing", "workorders", "system"]
+    # 权限配置（演示：给每个角色分配资源，16模块×4动作）
+    resources = [
+        "dashboard","market","customers",
+        "assets","deposits",
+        "leases","factory-rental","merchants",
+        "factory-sales",
+        "billing","meter",
+        "equipment","inspection-plans","inspection-tasks","workorders",
+        "system",
+    ]
+    actions = ["view","add","edit","delete"]
     for rid in range(1, 6):
         for res in resources:
-            allowed = 1 if rid == 1 else (0 if (rid == 5 and res == "system") else 1)
-            c.execute("INSERT INTO role_permissions (role_id,resource,action,allowed) VALUES (?,?,?,?)",
-                      (rid, res, "view", allowed))
-            if rid == 1:
+            for act in actions:
+                # 系统管理员(rid=1): 全部权限
+                # 园区领导(rid=5): 无系统设置查看，无任何删除
+                if rid == 1:
+                    allowed = 1
+                elif rid == 5:
+                    allowed = 0 if (res == "system" or act == "delete") else 1
+                else:
+                    # 其他角色: 有查看，无新增/编辑/删除（简化演示）
+                    allowed = 1 if act == "view" else 0
                 c.execute("INSERT INTO role_permissions (role_id,resource,action,allowed) VALUES (?,?,?,?)",
-                          (rid, res, "edit", 1))
+                          (rid, res, act, allowed))
 
     # 菜单
     menus = [

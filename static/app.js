@@ -2363,24 +2363,50 @@ async function renderSysCalendar() {
 }
 
 const PERM_RESOURCES = [
-  ['dashboard', '看板'], ['assets', '资产台账'], ['leases', '公寓管理'], ['factories', '厂房管理'],
-  ['customers', '客户'], ['contracts', '合同'], ['billing', '收费'], ['workorders', '工单'], ['system', '系统设置']
+  // 经营分析
+  {code:'dashboard',    label:'看板',       icon:'📊', group:'经营分析'},
+  // 招商营销
+  {code:'market',       label:'市场调研',   icon:'📈', group:'招商营销'},
+  {code:'customers',    label:'客户管理',   icon:'👥', group:'招商营销'},
+  // 资产管理
+  {code:'assets',       label:'资产台账',   icon:'🏢', group:'资产管理'},
+  {code:'deposits',     label:'押金管理',   icon:'🧾', group:'资产管理'},
+  // 租赁运营
+  {code:'leases',       label:'公寓管理',   icon:'🏠', group:'租赁运营'},
+  {code:'factory-rental',label:'厂房租赁',  icon:'🏭', group:'租赁运营'},
+  {code:'merchants',    label:'商户管理',   icon:'🏪', group:'租赁运营'},
+  // 销售运营
+  {code:'factory-sales',label:'厂房销售',  icon:'🏗️', group:'销售运营'},
+  // 财务收费
+  {code:'billing',      label:'财务收费',   icon:'💰', group:'财务收费'},
+  {code:'meter',        label:'水电抄表',   icon:'⚡', group:'财务收费'},
+  // 物业服务
+  {code:'equipment',          label:'设备台账',   icon:'🔧', group:'物业服务'},
+  {code:'inspection-plans',   label:'巡检计划',   icon:'🛡️', group:'物业服务'},
+  {code:'inspection-tasks',   label:'巡检任务',   icon:'✅', group:'物业服务'},
+  {code:'workorders',         label:'工单',       icon:'🛠️', group:'物业服务'},
+  // 系统设置
+  {code:'system',      label:'系统设置',   icon:'⚙️', group:'系统设置'},
 ];
-const PERM_ACTIONS = [['view', '查看'], ['edit', '操作']];
+const PERM_ACTIONS = [['view','查看'],['add','新增'],['edit','编辑'],['delete','删除']];
 let PERM_ROLE_ID = null;
 async function renderSysPerms() {
   const roles = await API.get('/api/sys_roles');
   if (PERM_ROLE_ID == null) PERM_ROLE_ID = roles[0] && roles[0].id;
+  // 按 group 分组
+  const groups = {};
+  PERM_RESOURCES.forEach(r => {
+    if (!groups[r.group]) groups[r.group] = [];
+    groups[r.group].push(r);
+  });
+  const groupOrder = ['经营分析','招商营销','资产管理','租赁运营','销售运营','财务收费','物业服务','系统设置'];
   $('#sysView').innerHTML = `
-    <div class="btn-row">
+    <div class="perm-toolbar">
       <label>角色：</label>
       <select id="permRole">${roles.map(r => `<option value="${r.id}" ${r.id == PERM_ROLE_ID ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
-      <span class="muted">勾选表示允许该角色访问 / 操作对应模块</span>
+      <span class="muted">勾选表示允许该角色对对应模块执行相应操作</span>
     </div>
-    <div class="table-wrap"><table class="perm-tbl">
-      <thead><tr><th>模块</th><th>查看</th><th>操作</th></tr></thead>
-      <tbody id="permBody"></tbody>
-    </table></div>`;
+    <div id="permGroups"></div>`;
   $('#permRole').onchange = (e) => { PERM_ROLE_ID = +e.target.value; loadPermMatrix(); };
   await loadPermMatrix();
 }
@@ -2388,26 +2414,50 @@ async function loadPermMatrix() {
   const perms = await API.get('/api/role_permissions?role_id=' + PERM_ROLE_ID);
   const map = {};
   perms.forEach(p => { map[p.resource + '|' + p.action] = p; });
-  $('#permBody').innerHTML = PERM_RESOURCES.map(([res, label]) => {
-    const cells = PERM_ACTIONS.map(([act]) => {
-      const p = map[res + '|' + act];
-      const checked = p && p.allowed ? 'checked' : '';
-      return `<td><input type="checkbox" data-res="${res}" data-act="${act}" data-id="${p ? p.id : ''}" ${checked}></td>`;
-    }).join('');
-    return `<tr><td>${label}</td>${cells}</tr>`;
-  }).join('');
-  $('#permBody').querySelectorAll('input[type=checkbox]').forEach(cb => {
+  // 按 group 分组
+  const groups = {};
+  PERM_RESOURCES.forEach(r => { if (!groups[r.group]) groups[r.group] = []; groups[r.group].push(r); });
+  const groupOrder = ['经营分析','招商营销','资产管理','租赁运营','销售运营','财务收费','物业服务','系统设置'];
+  let html = '';
+  for (const gname of groupOrder) {
+    if (!groups[gname]) continue;
+    const items = groups[gname];
+    html += `<div class="perm-group"><div class="perm-group-title">${esc(gname)}</div><div class="table-wrap"><table class="perm-tbl">
+      <thead><tr><th style="width:160px">模块</th>${PERM_ACTIONS.map(([a,l])=>`<th>${l}</th>`).join('')}<th style="width:50px"></th></tr></thead>
+      <tbody>`;
+    for (const r of items) {
+      html += '<tr>';
+      html += `<td><span class="perm-icon">${esc(r.icon)}</span>${esc(r.label)}</td>`;
+      for (const [act] of PERM_ACTIONS) {
+        const p = map[r.code + '|' + act];
+        const checked = p && p.allowed ? 'checked' : '';
+        html += `<td><input type="checkbox" data-res="${r.code}" data-act="${act}" data-id="${p ? p.id : ''}" ${checked}></td>`;
+      }
+      html += `<td class="perm-status" data-res="${r.code}"></td>`;
+      html += '</tr>';
+    }
+    html += '</tbody></table></div></div>';
+  }
+  $('#permGroups').innerHTML = html;
+  // 绑定事件
+  $('#permGroups').querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.onchange = async () => {
       const res = cb.dataset.res, act = cb.dataset.act, id = cb.dataset.id;
       const allowed = cb.checked ? 1 : 0;
-      let r;
-      if (id) {
-        r = await API.put('/api/role_permissions/' + id, { allowed });
-      } else {
-        r = await API.post('/api/role_permissions', { role_id: PERM_ROLE_ID, resource: res, action: act, allowed });
-        if (r && r.id) cb.dataset.id = r.id;
+      const statusEl = document.querySelector('.perm-status[data-res="'+res+'"]');
+      if (statusEl) statusEl.innerHTML = '<span class="perm-saving">⏳</span>';
+      try {
+        let r;
+        if (id) {
+          r = await API.put('/api/role_permissions/' + id, { allowed });
+        } else {
+          r = await API.post('/api/role_permissions', { role_id: PERM_ROLE_ID, resource: res, action: act, allowed });
+          if (r && r.id) cb.dataset.id = r.id;
+        }
+        if (statusEl) statusEl.innerHTML = '<span class="perm-ok">✓</span>';
+      } catch(e) {
+        if (statusEl) statusEl.innerHTML = '<span class="perm-err">✗</span>';
       }
-      toast('已更新');
     };
   });
 }
