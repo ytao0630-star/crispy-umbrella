@@ -281,6 +281,7 @@ def init_db():
     _ensure_merchants(conn)
     _ensure_merchants_seed(conn)
     _ensure_deposit_columns(conn)
+    _backfill_deposits(conn)
     _ensure_workorder_columns(conn)
     _ensure_contract_columns(conn)
     _ensure_receipt_columns(conn)
@@ -595,6 +596,7 @@ def _ensure_apartment_sync_columns(conn):
     c = conn.cursor()
     for sql in (
         "ALTER TABLE apartment_rentals ADD COLUMN contract_id INTEGER",
+        "ALTER TABLE apartment_rentals ADD COLUMN deposit_status TEXT DEFAULT '已收'",
         "ALTER TABLE apartment_fees ADD COLUMN source TEXT DEFAULT '手工'",
         "ALTER TABLE apartment_fees ADD COLUMN bill_id INTEGER",
         "ALTER TABLE apartment_rooms ADD COLUMN unit_id INTEGER",
@@ -810,14 +812,63 @@ def _ensure_merchants_seed(conn):
 
 
 def _ensure_deposit_columns(conn):
-    """押金表补充 status 列（待收缴/已收/已退），用于签约自动收押的状态跟踪。"""
+    """押金表补充 status / rental_id / source 列。
+    - status: 待收缴/已收/已退/已抵扣（签约自动收押与退押的状态跟踪）
+    - rental_id: 关联公寓出租记录（apartment_rentals.id），与 contract_id 二选一
+    - source: 'contract'(厂房/公寓合同) 或 'apartment'(公寓出租记录)，便于台账区分来源
+    """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(deposits)").fetchall()}
-    if "status" not in cols:
-        try:
-            conn.execute("ALTER TABLE deposits ADD COLUMN status TEXT DEFAULT '已收'")
-            conn.commit()
-        except Exception:
-            pass
+    for col, ddl in [
+        ("status", "TEXT DEFAULT '已收'"),
+        ("rental_id", "INTEGER"),
+        ("source", "TEXT DEFAULT 'contract'"),
+    ]:
+        if col not in cols:
+            try:
+                conn.execute(f"ALTER TABLE deposits ADD COLUMN {col} {ddl}")
+                conn.commit()
+            except Exception:
+                pass
+
+
+def _backfill_deposits(conn):
+    """启动时为历史数据补齐押金台账，打通「租赁 → 押金」互联：
+    - 租赁合同(deposit>0) 且无对应押金记录 → 生成「收/待收缴」（排除已关联公寓出租的合同，避免重复）
+    - 公寓出租记录(deposit>0) 且无对应押金记录 → 生成「收/待收缴」
+    幂等：按 contract_id / rental_id 判重。
+    """
+    c = conn.cursor()
+    # 厂房/公寓合同（排除已绑定公寓出租记录者，押金改由出租记录侧生成）
+    contracts = c.execute(
+        "SELECT id, code, unit_id, customer_id, deposit, deposit_status, sign_date "
+        "FROM contracts WHERE type='租赁' AND deposit IS NOT NULL AND deposit>0 "
+        "AND id NOT IN (SELECT contract_id FROM apartment_rentals WHERE contract_id IS NOT NULL)"
+    ).fetchall()
+    for ct in contracts:
+        if c.execute("SELECT 1 FROM deposits WHERE contract_id=? AND type='收'", (ct["id"],)).fetchone():
+            continue
+        init_status = '已收' if ct["deposit_status"] in ('已收',) else '待收缴'
+        c.execute(
+            "INSERT INTO deposits (contract_id, unit_id, customer_id, amount, type, date, status, source, note) "
+            "VALUES (?,?,?,?,?,?,?,'contract','签约收押（补录）')",
+            (ct["id"], ct["unit_id"], ct["customer_id"], float(ct["deposit"]),
+             "收", ct["sign_date"] or today(), init_status))
+    # 公寓出租记录
+    rentals = c.execute(
+        "SELECT r.id, r.room_id, r.deposit, r.deposit_status, r.check_in_date, ar.unit_id "
+        "FROM apartment_rentals r LEFT JOIN apartment_rooms ar ON ar.id=r.room_id "
+        "WHERE r.deposit IS NOT NULL AND r.deposit>0"
+    ).fetchall()
+    for r in rentals:
+        if c.execute("SELECT 1 FROM deposits WHERE rental_id=? AND type='收'", (r["id"],)).fetchone():
+            continue
+        # 历史出租记录默认视为「待收缴」，由财务在押金台账确认收款（标记已收）后回写出租记录
+        c.execute(
+            "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
+            "VALUES (?,?,NULL,?,'收',?,?,'apartment','公寓出租收押（补录）')",
+            (r["id"], r["unit_id"], float(r["deposit"]), r["check_in_date"] or today(), "待收缴"))
+        c.execute("UPDATE apartment_rentals SET deposit_status='待收缴' WHERE id=?", (r["id"],))
+    conn.commit()
 
 
 def _ensure_workorder_columns(conn):
@@ -1626,11 +1677,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/bills/") and path.endswith("/receipt"):
             bid = path.split("/")[-2]
             return self._send_json(self.api_receipt(bid, body))
-        # 押金单条更新（标记已收 / 部分收 / 调整金额 / 备注等）
+        # 押金单条更新（标记已收 / 部分收 / 调整金额 / 备注等）+ 双向同步回写来源
         if path.startswith("/api/deposits/") and path.count("/") == 3:
             rid = path.split("/")[-1]
             if rid.isdigit():
-                return self._send_json(self.api_update("deposits", rid, body))
+                return self._send_json(self.api_update_deposit(rid, body))
         # 系统管理
         for table in ["users", "departments", "sys_roles", "role_permissions", "sys_menus", "system_rules", "data_dict"]:
             if path.startswith(f"/api/{table}/"):
@@ -2967,13 +3018,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body["stay_days"] = _calc_stay_days(body.get("check_in_date"), body.get("check_out_date"))
         body["created_at"] = now()
         body["updated_at"] = now()
-        return self.api_insert("apartment_rentals", body)
+        row = self.api_insert("apartment_rentals", body)
+        # 签约自动收押：出租记录含押金且大于 0 → 自动生成一笔待收缴押金（租赁↔押金 互联）
+        dep = row.get("deposit")
+        if dep and float(dep) > 0:
+            conn = self._db()
+            c = conn.cursor()
+            room = c.execute("SELECT unit_id FROM apartment_rooms WHERE id=?", (row.get("room_id"),)).fetchone()
+            unit_id = room["unit_id"] if room else None
+            c.execute(
+                "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
+                "VALUES (?,?,NULL,?,'收',?,?,'apartment','公寓出租自动收押')",
+                (row["id"], unit_id, float(dep), row.get("check_in_date") or today(), "待收缴"))
+            c.execute("UPDATE apartment_rentals SET deposit_status='待收缴' WHERE id=?", (row["id"],))
+            self._audit(conn, "新增", "押金", f"公寓出租自动收押 ¥{float(dep)}（出租记录#{row['id']}）", body.get("operator"))
+            conn.commit()
+            conn.close()
+        return row
 
     def api_update_apartment_rental(self, rid, body):
         body = dict(body)
         body["stay_days"] = _calc_stay_days(body.get("check_in_date"), body.get("check_out_date"))
         body["updated_at"] = now()
-        return self.api_update("apartment_rentals", rid, body)
+        row = self.api_update("apartment_rentals", rid, body)
+        # 退房自动退押：设置退租日期且存在已收押金、尚无退款记录 → 生成待退款（互联）
+        if body.get("check_out_date"):
+            conn = self._db()
+            c = conn.cursor()
+            rental = c.execute("SELECT * FROM apartment_rentals WHERE id=?", (rid,)).fetchone()
+            collected = c.execute(
+                "SELECT COALESCE(SUM(amount),0) AS s FROM deposits "
+                "WHERE rental_id=? AND type='收' AND status IN ('已收','部分收')", (rid,)).fetchone()["s"]
+            existing = c.execute("SELECT 1 FROM deposits WHERE rental_id=? AND type='退'", (rid,)).fetchone()
+            if collected > 0 and not existing:
+                room = c.execute("SELECT unit_id FROM apartment_rooms WHERE id=?", (rental["room_id"],)).fetchone()
+                unit_id = room["unit_id"] if room else None
+                c.execute(
+                    "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
+                    "VALUES (?,?,NULL,?,'退',?,?,'apartment','退房自动退还（原已收押金）')",
+                    (rid, unit_id, float(collected), today(), "待退款"))
+                c.execute("UPDATE apartment_rentals SET deposit_status='待退' WHERE id=?", (rid,))
+                self._audit(conn, "新增", "押金", f"退房自动退押 ¥{float(collected)}（出租记录#{rid}）", body.get("operator"))
+                conn.commit()
+            conn.close()
+        return row
 
     def api_apartment_fees(self, room_id=None, rental_id=None):
         conn = self._db()
@@ -3069,13 +3157,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_deposits(self):
         conn = self._db()
         rows = conn.execute(
-            "SELECT d.*, u.code AS unit_code, b.name AS building_name "
+            "SELECT d.*, u.code AS unit_code, b.name AS building_name, "
+            "ct.code AS contract_code, ct.deposit_status AS contract_dep_status, "
+            "ar.room_no AS room_no, r.deposit_status AS rental_dep_status "
             "FROM deposits d "
             "LEFT JOIN units u ON d.unit_id = u.id "
             "LEFT JOIN buildings b ON u.building_id = b.id "
+            "LEFT JOIN contracts ct ON d.contract_id = ct.id "
+            "LEFT JOIN apartment_rentals r ON d.rental_id = r.id "
+            "LEFT JOIN apartment_rooms ar ON r.room_id = ar.id "
             "ORDER BY d.id DESC").fetchall()
         conn.close()
         return rows
+
+    def api_update_deposit(self, rid, body):
+        """押金单条更新 + 双向同步：
+        在押金台账标记「已收 / 已退 / 待退款」后，回写来源（合同 / 公寓出租记录）的
+        deposit_status，实现「押金模块退掉 → 前面租赁自动同步」的闭环。
+        """
+        row = self.api_update("deposits", rid, body)
+        if "status" in body:
+            conn = self._db()
+            c = conn.cursor()
+            dep = c.execute("SELECT * FROM deposits WHERE id=?", (rid,)).fetchone()
+            new_status = body["status"]
+            if new_status == "已收":
+                mapped = "已收"
+            elif new_status in ("已退", "已抵扣"):
+                mapped = "已退"
+            elif new_status == "待退款":
+                mapped = "待退"
+            elif new_status == "待收缴":
+                mapped = "待收"
+            else:
+                mapped = new_status
+            if dep.get("contract_id"):
+                c.execute("UPDATE contracts SET deposit_status=? WHERE id=?", (mapped, dep["contract_id"]))
+            if dep.get("rental_id"):
+                c.execute("UPDATE apartment_rentals SET deposit_status=? WHERE id=?", (mapped, dep["rental_id"]))
+            self._audit(conn, "更新", "押金",
+                         f"押金#{rid} 状态→{new_status}，回写来源 deposit_status={mapped}", body.get("operator"))
+            conn.commit()
+            conn.close()
+        return row
 
     def api_renew_contract(self, cid, body):
         conn = self._db()

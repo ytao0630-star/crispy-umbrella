@@ -1922,41 +1922,119 @@ window.deleteMerchant = async function(id) {
 };
 
 // ---------- 押金 ----------
+
+function depFilterButtons(deps, active) {
+  const cnt = (fn) => deps.filter(fn).length;
+  const btn = (f, n) => `<button class="btn sm ${f===active?'':'ghost'}" onclick="DEP_FILTER='${f}';renderDeposits()">${f} (${n})</button>`;
+  return [
+    btn('全部', deps.length),
+    btn('在押', cnt(d => d.type === '收' && ['已收','部分收'].includes(d.status))),
+    btn('待收', cnt(d => d.type === '收' && ['待收缴','部分收'].includes(d.status))),
+    btn('待退', cnt(d => d.status === '待退款')),
+    btn('已退', cnt(d => d.status === '已退' || d.status === '已抵扣')),
+  ].join('');
+}
+
+let DEP_FILTER = '全部';
 async function renderDeposits() {
   const [deposits, contracts] = await Promise.all([API.get('/api/deposits'), API.get('/api/contracts')]);
   CACHE.contracts = contracts;
-  const received = deposits.filter(d => d.type === '收' && (!d.status || d.status === '已收')).reduce((a, b) => a + (b.amount || 0), 0);
-  const refunded = deposits.filter(d => d.type === '退').reduce((a, b) => a + (b.amount || 0), 0);
-  const offset = deposits.filter(d => d.type === '抵扣').reduce((a, b) => a + (b.amount || 0), 0);
+  const received = deposits.filter(d => d.type === '收' && ['已收','部分收'].includes(d.status)).reduce((a, b) => a + (b.amount || 0), 0);
+  const refunded = deposits.filter(d => d.type === '退' && d.status === '已退').reduce((a, b) => a + (b.amount || 0), 0);
+  const offset = deposits.filter(d => d.type === '抵扣' || d.status === '已抵扣').reduce((a, b) => a + (b.amount || 0), 0);
+  const pendingRefund = deposits.filter(d => d.type === '退' && d.status === '待退款').reduce((a, b) => a + (b.amount || 0), 0);
   const held = received - refunded - offset;
+  let list = deposits;
+  if (DEP_FILTER === '在押') list = deposits.filter(d => d.type === '收' && ['已收','部分收'].includes(d.status));
+  else if (DEP_FILTER === '待收') list = deposits.filter(d => d.type === '收' && ['待收缴','部分收'].includes(d.status));
+  else if (DEP_FILTER === '已退') list = deposits.filter(d => d.status === '已退' || d.status === '已抵扣');
+  else if (DEP_FILTER === '待退') list = deposits.filter(d => d.status === '待退款');
   $('#view').innerHTML = `
     <div class="section-title">押金管理 <span class="sub">厂房 + 公寓押金统一登记</span></div>
     <div class="grid kpi-grid">
       <div class="kpi blue"><div class="label">总笔数</div><div class="value">${deposits.length}</div></div>
       <div class="kpi green"><div class="label">已收押金</div><div class="value">${yuan(received)}</div></div>
       <div class="kpi red"><div class="label">已退押金</div><div class="value">${yuan(refunded)}</div></div>
-      <div class="kpi amber"><div class="label">抵扣押金</div><div class="value">${yuan(offset)}</div></div>
+      <div class="kpi amber"><div class="label">待退款</div><div class="value">${yuan(pendingRefund)}</div></div>
       <div class="kpi purple"><div class="label">在押余额</div><div class="value">${yuan(held)}</div></div>
     </div>
+    <div class="filters">
+      ${depFilterButtons(deposits, DEP_FILTER)}
+      ${can('deposit_add') ? '<button class="btn" id="addDep" style="margin-left:auto">+ 新增押金</button>' : ''}
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>房间号</th><th>合同</th><th>客户</th><th>类型</th><th>金额</th><th>状态</th><th>日期</th><th>备注</th><th class="ops">操作</th></tr></thead>
+      <thead><tr><th>来源（互联）</th><th>客户</th><th>类型</th><th>金额</th><th>台账状态</th><th>日期</th><th>备注</th><th class="ops">操作</th></tr></thead>
       <tbody id="depTable"></tbody>
     </table></div>`;
-  $('#depTable').innerHTML = deposits.map(d => `
-    <tr><td>${esc(d.unit_code || uname(d.unit_id))}</td><td>${esc(ccode(d.contract_id))}</td><td>${esc(cname(d.customer_id))}</td><td>${tag(d.type)}</td><td>${yuan(d.amount)}</td><td>${tag(d.status || '已收')}</td><td>${esc(d.date || '-')}</td><td>${esc(d.note || '-')}</td><td class="ops">${
-      (d.type === '收' && can('deposit_add') && (d.status === '待收缴' || d.status === '部分收'))
-        ? `<button class="btn sm ghost" onclick="markDepositReceived(${d.id})">标记已收</button>`
-        : (d.type === '收' && d.status === '已收' ? '<span class="mut">已收</span>' : '-')
-    }</td></tr>`
-  ).join('') || '<tr><td colspan="9" class="empty">无记录</td></tr>';
+  if (can('deposit_add')) $('#addDep').onclick = () => openDepositModal();
+  $('#depTable').innerHTML = list.map(d => {
+    let ops = '';
+    if (d.type === '收' && (d.status === '待收缴' || d.status === '部分收'))
+      ops = `<button class="btn sm ghost" onclick="markDepositReceived(${d.id})">标记已收</button>`;
+    else if (d.type === '退' && d.status === '待退款')
+      ops = `<button class="btn sm primary" onclick="executeRefund(${d.id})">执行退款</button>`;
+    else if (d.status === '已收')
+      ops = '<span class="muted">在押中</span>';
+    else if (d.status === '已退')
+      ops = '<span class="muted">已完成</span>';
+    else
+      ops = '-';
+    const srcBadge = d.source === 'apartment' ? '<span class="tag t-公寓">公寓</span>' : '<span class="tag t-厂房">厂房</span>';
+    const srcRef = d.source === 'apartment' ? ('房间 ' + esc(d.room_no || '-')) : ('合同 ' + esc(d.contract_code || '-'));
+    const srcStatus = d.source === 'apartment' ? d.rental_dep_status : d.contract_dep_status;
+    const typeLabel = d.type === '收' ? '收款' : (d.type === '退' ? '退款' : d.type);
+    return `<tr>
+      <td>${srcBadge} ${srcRef}<div style="font-size:11px;color:var(--muted);margin-top:3px">来源押金状态：${esc(srcStatus || '-')} ${srcStatus && srcStatus === d.status ? '· 已同步' : ''}</div></td>
+      <td>${esc(cname(d.customer_id))}</td>
+      <td>${typeLabel}</td>
+      <td>${yuan(d.amount)}</td>
+      <td>${depStatusTag(d)}</td>
+      <td>${esc(d.date || '-')}</td>
+      <td>${esc(d.note || '-')}</td>
+      <td class="ops">${ops}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
 }
 
+function depStatusTag(d) {
+  const s = d.status || '已收';
+  const map = {'待收缴':'warning','部分收':'warning','已收':'success','待退款':'danger','部分退':'warning','已退':'','已抵扣':'amber','不退':''};
+  const cls = map[s] || '';
+  return cls ? `<span class="tag ${cls}">${s}</span>` : `<span class="muted">${s||'-'}</span>`;
+}
+
+window.openDepositModal = function(d = {}) {
+  const isEdit = !!d.id;
+  openModal(isEdit ? '编辑押金' : '新增押金', `
+    <div class="form-grid">
+      <div class="form-row"><label>类型</label>
+        <select id="d_type"><option value="收" ${d.type!=='退'?'selected':''}>收款</option><option value="退" ${d.type==='退'?'selected':''}>退款</option></select></div>
+      <div class="form-row"><label>合同</label>
+        <select id="d_contract">${CACHE.contracts.map(c => `<option value="${c.id}" ${c.id==d.contract_id?'selected':''}>${esc(c.code)} (${esc(c.type)})</option>`).join('<option value="">-- 无 --</option>')}</select></div>
+      <div class="form-row"><label>金额</label><input type="number" id="d_amount" value="${d.amount||''}" step="0.01" placeholder="0.00"></div>
+      <div class="form-row"><label>状态</label>
+        <select id="d_status"><option value="已收" ${(d.status||'已收')=='已收'?'selected':''}>已收</option><option value="待收缴" ${d.status=='待收缴'?'selected':''}>待收缴</option><option value="待退款" ${d.status=='待退款'?'selected':''}>待退款</option><option value="已退" ${d.status=='已退'?'selected':''}>已退</option></select></div>
+      <div class="form-row"><label>日期</label><input type="date" id="d_date" value="${d.date||new Date().toISOString().slice(0,10)}"></div>
+      <div class="form-row"><label>备注</label><input id="d_note" value="${esc(d.note||'')}" placeholder="选填"></div>
+    </div>`, async () => {
+    const body = { type: $('#d_type').value, contract_id: +$('#d_contract').value || null, amount: +$('#d_amount').value, status: $('#d_status').value, date: $('#d_date').value, note: $('#d_note').value };
+    const ct = CACHE.contracts.find(x => x.id == body.contract_id);
+    if (ct) { body.unit_id = ct.unit_id; body.customer_id = ct.customer_id; }
+    if (isEdit) await API.put('/api/deposits/' + d.id, body);
+    else await API.post('/api/deposits', body);
+    closeModal(); toast(isEdit ? '已更新' : '已新增'); renderDeposits();
+  });
+};
+
 window.markDepositReceived = async function(id) {
-  try {
-    await API.put('/api/deposits/' + id, { status: '已收' });
-    toast('押金已标记为「已收」');
-    renderDeposits();
-  } catch (e) { toast('标记失败：' + (e.message || e)); }
+  try { await API.put('/api/deposits/' + id, { status: '已收' }); toast('已标记「已收」，并同步回来源（合同/出租记录）'); renderDeposits(); }
+  catch (e) { toast('标记失败：' + (e.message || e)); }
+};
+
+window.executeRefund = async function(id) {
+  if (!confirm('确认执行此笔押金退款？')) return;
+  try { await API.put('/api/deposits/' + id, { status: '已退' }); toast('退款已执行，并同步回来源（合同/出租记录）'); renderDeposits(); }
+  catch (e) { toast('退款失败：' + (e.message || e)); }
 };
 
 // ---------- 工单 ----------
