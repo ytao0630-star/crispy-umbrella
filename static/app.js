@@ -2417,7 +2417,7 @@ async function renderSysMenus() {
   MENU_DATA = await API.get('/api/sys_menus');
   const tree = buildMenuTree(MENU_DATA);
   $('#sysView').innerHTML = `
-    <div class="btn-row"><button class="btn" id="addM">+ 新增菜单</button></div>
+    <div class="btn-row"><button class="btn" id="addM">+ 新增菜单</button><button class="btn ghost" onclick="resetMenuVisibility()">↺ 全部显示</button></div>
     <div class="table-wrap"><table>
       <thead><tr><th style="width:40px"></th><th>名称</th><th>编码</th><th>图标</th><th>排序</th><th>可见</th><th style="width:140px">操作</th></tr></thead>
       <tbody id="mTable"></tbody>
@@ -2470,6 +2470,31 @@ window.toggleMenuRow = function(id) {
 window.toggleMenuVis = async function(id, val) {
   await API.put('/api/sys_menus/' + id, { visible: val ? 1 : 0 });
   toast(val ? '已显示' : '已隐藏');
+  applyMenuVisibility();
+};
+// 菜单可见性 -> 真实驱动侧栏/底部导航显示
+let MENU_VIS = {};
+async function applyMenuVisibility() {
+  try {
+    const menus = await API.get('/api/sys_menus');
+    MENU_VIS = {};
+    menus.forEach(m => { MENU_VIS[m.code] = m.visible; });
+  } catch (e) { return; }
+  $$('[data-view]').forEach(el => {
+    const code = el.dataset.view;
+    if (code === 'system') return; // 系统设置始终可见，防管理员锁死
+    const v = MENU_VIS[code];
+    if (v === 0 || v === false) el.classList.add('hidden');
+    else el.classList.remove('hidden');
+  });
+}
+window.resetMenuVisibility = async function() {
+  if (!confirm('将把所有菜单恢复为显示状态（含被隐藏的导航项），确定？')) return;
+  const menus = await API.get('/api/sys_menus');
+  for (const m of menus) {
+    if (m.visible !== 1) await API.put('/api/sys_menus/' + m.id, { visible: 1 });
+  }
+  toast('已全部显示'); renderSysMenus(); applyMenuVisibility();
 };
 window.moveMenu = async function(id, dir) {
   const idx = MENU_DATA.findIndex(x => x.id === id);
@@ -2611,6 +2636,7 @@ document.addEventListener('DOMContentLoaded', () => {
   ROLES.forEach(r => { const o = document.createElement('option'); o.value = r; o.textContent = r; roleSel.appendChild(o); });
   roleSel.value = ROLE;
   roleSel.onchange = () => { ROLE = roleSel.value; setView(CURRENT_VIEW); };
-  // 先拉取数据字典，再渲染首屏（字典失败会自动回退内置默认值）
-  loadDict().finally(() => setView('dashboard'));
+  // 先拉取数据字典与菜单可见性，再渲染首屏
+  loadDict();
+  applyMenuVisibility().finally(() => setView('dashboard'));
 });

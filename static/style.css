@@ -381,3 +381,7 @@ table.perm-tbl input[type=checkbox] { width: 17px; height: 17px; cursor: pointer
 .dict-group-body table { width: 100%; border-collapse: collapse; }
 .dict-group-body th { background: #f1f5f9; color: #64748b; font-weight: 600; font-size: 12px; padding: 6px 10px; text-align: left; }
 .dict-group-body td { padding: 5px 10px; font-size: 13px; border-bottom: 1px solid #f1f5f9; }
+
+
+/* 菜单可见性：被隐藏的导航项不显示 */
+.hidden { display: none !important; }
