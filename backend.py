@@ -281,6 +281,7 @@ def init_db():
     _ensure_merchants(conn)
     _ensure_merchants_seed(conn)
     _ensure_deposit_columns(conn)
+    _ensure_deposit_ledger(conn)
     _backfill_deposits(conn)
     _ensure_workorder_columns(conn)
     _ensure_contract_columns(conn)
@@ -812,16 +813,22 @@ def _ensure_merchants_seed(conn):
 
 
 def _ensure_deposit_columns(conn):
-    """押金表补充 status / rental_id / source 列。
+    """押金表补充 status / rental_id / source / operator / payment_method / voucher_no / deducted_amount 列。
     - status: 待收缴/已收/已退/已抵扣（签约自动收押与退押的状态跟踪）
     - rental_id: 关联公寓出租记录（apartment_rentals.id），与 contract_id 二选一
     - source: 'contract'(厂房/公寓合同) 或 'apartment'(公寓出租记录)，便于台账区分来源
+    - operator/payment_method/voucher_no: 收押时的经手人/支付方式/凭证号（流水明细）
+    - deducted_amount: 已抵扣累计额（押金抵欠费时累加，在押余额=amount-deducted_amount）
     """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(deposits)").fetchall()}
     for col, ddl in [
         ("status", "TEXT DEFAULT '已收'"),
         ("rental_id", "INTEGER"),
         ("source", "TEXT DEFAULT 'contract'"),
+        ("operator", "TEXT"),
+        ("payment_method", "TEXT"),
+        ("voucher_no", "TEXT"),
+        ("deducted_amount", "REAL DEFAULT 0"),
     ]:
         if col not in cols:
             try:
@@ -829,6 +836,36 @@ def _ensure_deposit_columns(conn):
                 conn.commit()
             except Exception:
                 pass
+
+
+def _ensure_deposit_ledger(conn):
+    """押金流水明细表：记录每一笔押金事件（收押/收款/抵扣/退款/调整），
+    承载经手人/支付方式/凭证号，并作为合同/出租详情页「押金时间线」的数据源。"""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS deposit_ledger ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "deposit_id INTEGER,"
+        "action TEXT,"
+        "amount REAL,"
+        "balance_after REAL,"
+        "operator TEXT,"
+        "payment_method TEXT,"
+        "voucher_no TEXT,"
+        "note TEXT,"
+        "created_at TEXT)")
+    conn.commit()
+
+
+def _append_ledger(c, deposit_id, action, amount, operator=None, payment_method=None, voucher_no=None, note=None):
+    """写一条押金流水，并自动计算在押余额（amount - 已抵扣；已退则为 0）。"""
+    dep = c.execute("SELECT * FROM deposits WHERE id=?", (deposit_id,)).fetchone()
+    if not dep:
+        return
+    bal = 0.0 if dep["status"] == "已退" else max(0.0, float(dep["amount"] or 0) - float(dep.get("deducted_amount") or 0))
+    c.execute(
+        "INSERT INTO deposit_ledger (deposit_id,action,amount,balance_after,operator,payment_method,voucher_no,note,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (deposit_id, action, float(amount or 0), bal, operator, payment_method, voucher_no, note, now()))
 
 
 def _backfill_deposits(conn):
@@ -853,6 +890,7 @@ def _backfill_deposits(conn):
             "VALUES (?,?,?,?,?,?,?,'contract','签约收押（补录）')",
             (ct["id"], ct["unit_id"], ct["customer_id"], float(ct["deposit"]),
              "收", ct["sign_date"] or today(), init_status))
+        _append_ledger(c, c.lastrowid, "收押", float(ct["deposit"]), None, None, None, "签约收押（补录）")
     # 公寓出租记录
     rentals = c.execute(
         "SELECT r.id, r.room_id, r.deposit, r.deposit_status, r.check_in_date, ar.unit_id "
@@ -867,6 +905,7 @@ def _backfill_deposits(conn):
             "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
             "VALUES (?,?,NULL,?,'收',?,?,'apartment','公寓出租收押（补录）')",
             (r["id"], r["unit_id"], float(r["deposit"]), r["check_in_date"] or today(), "待收缴"))
+        _append_ledger(c, c.lastrowid, "收押", float(r["deposit"]), None, None, None, "公寓出租收押（补录）")
         c.execute("UPDATE apartment_rentals SET deposit_status='待收缴' WHERE id=?", (r["id"],))
     conn.commit()
 
@@ -1410,6 +1449,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_contracts(q("type"), q("status"), q("unit_id")))
         if path == "/api/bills":
             return self._send_json(self.api_bills(q("status"), q("item_type"), q("unit_id"), q("customer_id")))
+        if path.startswith("/api/bills/") and path.count("/") == 3 and not path.endswith("/receipt"):
+            rid = path.split("/")[-1]
+            if rid.isdigit():
+                conn = self._db()
+                row = conn.execute("SELECT * FROM bills WHERE id=?", (rid,)).fetchone()
+                conn.close()
+                return self._send_json(row or {"error": "not found"}, 404 if not row else 200)
         if path == "/api/meter-readings":
             return self._send_json(self.api_list("meter_readings"))
         if path == "/api/meter-records":
@@ -1461,6 +1507,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(self.api_apartment_fees_summary(room_id=q("room_id"), rental_id=q("rental_id")))
         if path == "/api/deposits":
             return self._send_json(self.api_deposits())
+        if path.startswith("/api/deposits/") and path.endswith("/ledger"):
+            rid = path.split("/")[-2]
+            if rid.isdigit():
+                return self._send_json(self.api_deposit_ledger(rid))
+        if path.startswith("/api/deposits/") and path.count("/") == 3:
+            rid = path.split("/")[-1]
+            if rid.isdigit():
+                conn = self._db()
+                row = conn.execute("SELECT * FROM deposits WHERE id=?", (rid,)).fetchone()
+                conn.close()
+                return self._send_json(row or {"error": "not found"}, 404 if not row else 200)
         # 商户管理
         if path == "/api/merchants":
             return self._send_json(self.api_list("merchants"))
@@ -1560,7 +1617,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cid = path.split("/")[-2]
             return self._send_json(self.api_terminate_contract(cid, body))
         if path == "/api/deposits":
-            return self._send_json(self.api_insert("deposits", body), 201)
+            return self._send_json(self.api_insert_deposit(body), 201)
+        # 押金抵扣欠费（冲抵账单并生成收款凭证）
+        if path.startswith("/api/deposits/") and path.endswith("/deduct"):
+            rid = path.split("/")[-2]
+            if rid.isdigit():
+                return self._send_json(self.api_deduct_deposit(rid, body), 200)
         # 商户管理
         if path == "/api/merchants":
             body = dict(body)
@@ -2289,6 +2351,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (new_id, ct["unit_id"], ct["customer_id"], float(dep), "收",
                  ct.get("sign_date") or today(), "待收缴", "签约自动收取"))
+            _append_ledger(c, c.lastrowid, "收押", float(dep), body.get("operator"), None, None, "签约自动收取")
             self._audit(conn, "新增", "押金", f"签约自动收押 ¥{float(dep)}（合同 {ct.get('code')}）", body.get("operator"))
         self._audit(conn, "新增", "合同", f"新增{ct['type']}合同 {ct.get('code')}", body.get("operator"))
         conn.commit()
@@ -3030,6 +3093,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
                 "VALUES (?,?,NULL,?,'收',?,?,'apartment','公寓出租自动收押')",
                 (row["id"], unit_id, float(dep), row.get("check_in_date") or today(), "待收缴"))
+            _append_ledger(c, c.lastrowid, "收押", float(dep), body.get("operator"), None, None, "公寓出租自动收押")
             c.execute("UPDATE apartment_rentals SET deposit_status='待收缴' WHERE id=?", (row["id"],))
             self._audit(conn, "新增", "押金", f"公寓出租自动收押 ¥{float(dep)}（出租记录#{row['id']}）", body.get("operator"))
             conn.commit()
@@ -3057,6 +3121,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "INSERT INTO deposits (rental_id, unit_id, customer_id, amount, type, date, status, source, note) "
                     "VALUES (?,?,NULL,?,'退',?,?,'apartment','退房自动退还（原已收押金）')",
                     (rid, unit_id, float(collected), today(), "待退款"))
+                _append_ledger(c, c.lastrowid, "退款", float(collected), body.get("operator"), None, None, "退房自动退还（原已收押金）")
                 c.execute("UPDATE apartment_rentals SET deposit_status='待退' WHERE id=?", (rid,))
                 self._audit(conn, "新增", "押金", f"退房自动退押 ¥{float(collected)}（出租记录#{rid}）", body.get("operator"))
                 conn.commit()
@@ -3171,9 +3236,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return rows
 
     def api_update_deposit(self, rid, body):
-        """押金单条更新 + 双向同步：
+        """押金单条更新 + 双向同步 + 流水明细：
         在押金台账标记「已收 / 已退 / 待退款」后，回写来源（合同 / 公寓出租记录）的
-        deposit_status，实现「押金模块退掉 → 前面租赁自动同步」的闭环。
+        deposit_status，并写押金流水（收款/退款），实现「押金模块退掉 → 前面租赁自动同步」的闭环。
         """
         row = self.api_update("deposits", rid, body)
         if "status" in body:
@@ -3195,11 +3260,74 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 c.execute("UPDATE contracts SET deposit_status=? WHERE id=?", (mapped, dep["contract_id"]))
             if dep.get("rental_id"):
                 c.execute("UPDATE apartment_rentals SET deposit_status=? WHERE id=?", (mapped, dep["rental_id"]))
+            op = body.get("operator"); pm = body.get("payment_method"); vn = body.get("voucher_no")
+            if new_status == "已收":
+                _append_ledger(c, rid, "收款", dep["amount"], op, pm, vn, "标记已收")
+            elif new_status == "已退":
+                _append_ledger(c, rid, "退款", dep["amount"], op, pm, vn, "执行退款")
             self._audit(conn, "更新", "押金",
                          f"押金#{rid} 状态→{new_status}，回写来源 deposit_status={mapped}", body.get("operator"))
             conn.commit()
             conn.close()
         return row
+
+    def api_insert_deposit(self, body):
+        """手动新增押金（收/退），并写首条「收押/退押」流水（含经手人/支付方式/凭证号）。"""
+        row = self.api_insert("deposits", body)
+        conn = self._db()
+        c = conn.cursor()
+        action = "收押" if (body.get("type") or "收") == "收" else "退押"
+        _append_ledger(c, row["id"], action, row.get("amount"), body.get("operator"),
+                       body.get("payment_method"), body.get("voucher_no"), body.get("note") or action)
+        conn.commit(); conn.close()
+        return row
+
+    def api_deduct_deposit(self, rid, body):
+        """押金抵扣欠费：从在押押金中扣减指定金额，可关联账单自动冲抵并生成「押金抵扣」收款凭证。"""
+        conn = self._db()
+        c = conn.cursor()
+        dep = c.execute("SELECT * FROM deposits WHERE id=?", (rid,)).fetchone()
+        if not dep:
+            conn.close(); return {"error": "deposit not found"}
+        if dep["type"] != "收" or dep["status"] not in ("已收", "部分收"):
+            conn.close(); return {"error": "仅「已收/部分收」的在押押金可抵扣"}
+        available = float(dep["amount"] or 0) - float(dep.get("deducted_amount") or 0)
+        try:
+            amt = float(body.get("amount") or 0)
+        except Exception:
+            conn.close(); return {"error": "抵扣金额无效"}
+        if amt <= 0 or amt > available + 1e-6:
+            conn.close(); return {"error": f"抵扣金额需在 0~{available:.2f} 之间"}
+        op = body.get("operator"); vn = body.get("voucher_no") or f"押金#{rid}"
+        note = body.get("note") or "抵扣欠费"
+        # 抵扣来源账单（可选）：冲减 bill 并生成收款凭证
+        bill_id = body.get("bill_id")
+        if bill_id:
+            bill = c.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+            if bill and bill["status"] in ("待收", "部分收"):
+                new_paid = float(bill["paid_amount"] or 0) + amt
+                bstatus = "已收" if new_paid >= float(bill["amount"] or 0) - 1e-6 else "部分收"
+                c.execute("UPDATE bills SET paid_amount=?, status=? WHERE id=?", (new_paid, bstatus, bill_id))
+                c.execute(
+                    "INSERT INTO receipts (bill_id,amount,method,date,operator,voucher_no,late_fee) "
+                    "VALUES (?,?,?,?,?,?,0)",
+                    (bill_id, amt, "押金抵扣", today(), op, vn))
+        # 更新押金：累计抵扣 + 状态（足额抵扣→已抵扣）
+        new_deducted = float(dep.get("deducted_amount") or 0) + amt
+        new_status = "已抵扣" if new_deducted >= float(dep["amount"] or 0) - 1e-6 else dep["status"]
+        c.execute("UPDATE deposits SET deducted_amount=?, status=? WHERE id=?", (new_deducted, new_status, rid))
+        _append_ledger(c, rid, "抵扣", -amt, op, None, vn, note)
+        self._audit(conn, "抵扣", "押金", f"押金#{rid} 抵扣 ¥{amt}" + (f"（冲抵账单#{bill_id}）" if bill_id else ""), op)
+        row = c.execute("SELECT * FROM deposits WHERE id=?", (rid,)).fetchone()
+        conn.commit(); conn.close()
+        return row
+
+    def api_deposit_ledger(self, rid):
+        conn = self._db()
+        rows = conn.execute(
+            "SELECT * FROM deposit_ledger WHERE deposit_id=? ORDER BY id ASC", (rid,)).fetchall()
+        conn.close()
+        return rows
 
     def api_renew_contract(self, cid, body):
         conn = self._db()
@@ -3257,6 +3385,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "VALUES (?,?,?,?,?,?,?,?)",
                         (cid, ct["unit_id"], ct["customer_id"], refund_amt, "退", today(),
                          "待退款", "退租自动退还（原已收押金）"))
+                    _append_ledger(c, c.lastrowid, "退款", refund_amt, body.get("operator"), None, None, "退租自动退还（原已收押金）")
                     self._audit(conn, "新增", "押金", f"退租自动退押 ¥{refund_amt}（合同 {ct.get('code')}）", body.get("operator"))
                     deposit_status = "待退"
                 else:

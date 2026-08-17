@@ -139,6 +139,29 @@ td.wrap, th.wrap { white-space: normal; }
 .t-收费 { background: #dbeafe; color: #1d4ed8; }
 .t-手工 { background: #eef2f7; color: #5b6876; }
 
+/* 押金流水时间线 */
+.timeline { position: relative; padding-left: 6px; }
+.tl-item { position: relative; padding: 0 0 16px 22px; border-left: 2px solid var(--line); }
+.tl-item:last-child { border-left-color: transparent; }
+.tl-dot { position: absolute; left: -7px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--primary); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+.tl-dot.收押 { background: #6d28d9; }
+.tl-dot.收款 { background: #15803d; }
+.tl-dot.抵扣 { background: #a16207; }
+.tl-dot.退款 { background: #b91c1c; }
+.tl-dot.调整 { background: #0369a1; }
+.tl-head { font-size: 14px; }
+.tl-head .pos { color: #15803d; font-weight: 700; }
+.tl-head .neg { color: #b91c1c; font-weight: 700; }
+.tl-bal { font-size: 12px; color: var(--muted); margin-left: 6px; }
+.tl-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.tl-note { font-size: 12px; color: #475569; margin-top: 4px; background: #f8fafc; border-radius: 6px; padding: 4px 8px; }
+
+/* 详情区块 */
+.section-sub { font-size: 13px; font-weight: 700; color: var(--primary); margin: 14px 0 8px; padding-left: 8px; border-left: 3px solid var(--primary); }
+.form-grid.readonly .form-row span { padding: 6px 0; color: var(--text); }
+.dep-tl-block { margin-bottom: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff; }
+.dep-tl-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+
 /* 按钮 */
 .btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 9px; padding: 8px 14px; font-size: 14px; font-weight: 600; background: var(--primary); color: #fff; }
 .btn:hover { background: var(--primary-d); }

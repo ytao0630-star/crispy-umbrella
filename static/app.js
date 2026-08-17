@@ -496,6 +496,7 @@ window.openRentalModal = async function(roomId, rentalId) {
     room = CACHE.apartmentRooms.find(x => x.id == roomId);
   }
   const isEdit = !!rec;
+  const depTimeline = isEdit ? await depositTimelineHtml('rental', rec.id) : '';
   const statusOpts = dictOpts('apartment_fee_status');
   const roomsOpts = CACHE.apartmentRooms.map(x => `<option value="${x.id}" ${String(x.id)===String(roomId)?'selected':''}>${esc(x.room_no)}（${esc(x.room_category||'')}）</option>`).join('');
   openModal(isEdit ? '编辑出租记录' : '登记出租', `
@@ -516,7 +517,8 @@ window.openRentalModal = async function(roomId, rentalId) {
       <div class="form-row"><label>指纹</label><input id="f_fingerprint" value="${esc(rec?rec.fingerprint:'')}" placeholder="已录 / 未录 / -"></div>
       <div class="form-row"><label>承办人</label><input id="f_handler" value="${esc(rec?rec.handler:'')}"></div>
       <div class="form-row" style="grid-column:1/3"><label>备注</label><input id="f_note" value="${esc(rec?rec.note:'')}"></div>
-    </div>`, async () => {
+    </div>
+    ${isEdit ? `<div class="section-sub">押金时间线（收押 → 收款 → 抵扣 → 退款）</div>${depTimeline}` : ''}`, async () => {
     const body = {
       room_id: +$('#f_room_id').value,
       company_name: $('#f_company_name').value, occupant_name: $('#f_occupant_name').value,
@@ -1300,7 +1302,7 @@ async function renderContracts() {
       <tr>
         <td>${esc(c.code)}</td><td>${tag(c.type)}</td><td>${esc(uname(c.unit_id))}</td><td>${esc(cname(c.customer_id))}</td>
         <td>${esc(c.start_date || '-')} ~ ${esc(c.end_date || '-')}</td><td>${yuan(c.amount || 0)}</td><td>${esc(c.pay_cycle || '-')}</td><td>${tag(c.status)}</td>
-        <td>${c.status === '生效' && can('lease_terminate') ? `<button class="btn sm red" onclick="terminateContract(${c.id})">退租</button>` : '-'}</td>
+        <td>${c.status === '生效' && can('lease_terminate') ? `<button class="btn sm red" onclick="terminateContract(${c.id})">退租</button>` : ''} <button class="btn sm ghost" onclick="openContractDetail(${c.id})">押金</button></td>
       </tr>`).join('') || '<tr><td colspan="9" class="empty">无记录</td></tr>';
   }
   $('#fType').onchange = renderList; $('#fStatus').onchange = renderList;
@@ -1939,23 +1941,24 @@ let DEP_FILTER = '全部';
 async function renderDeposits() {
   const [deposits, contracts] = await Promise.all([API.get('/api/deposits'), API.get('/api/contracts')]);
   CACHE.contracts = contracts;
+  const heldRows = deposits.filter(d => d.type === '收' && ['已收','部分收'].includes(d.status));
+  const held = heldRows.reduce((a, b) => a + (b.amount || 0) - (b.deducted_amount || 0), 0);
   const received = deposits.filter(d => d.type === '收' && ['已收','部分收'].includes(d.status)).reduce((a, b) => a + (b.amount || 0), 0);
   const refunded = deposits.filter(d => d.type === '退' && d.status === '已退').reduce((a, b) => a + (b.amount || 0), 0);
-  const offset = deposits.filter(d => d.type === '抵扣' || d.status === '已抵扣').reduce((a, b) => a + (b.amount || 0), 0);
+  const offset = deposits.filter(d => d.type === '收').reduce((a, b) => a + (b.deducted_amount || 0), 0);
   const pendingRefund = deposits.filter(d => d.type === '退' && d.status === '待退款').reduce((a, b) => a + (b.amount || 0), 0);
-  const held = received - refunded - offset;
   let list = deposits;
   if (DEP_FILTER === '在押') list = deposits.filter(d => d.type === '收' && ['已收','部分收'].includes(d.status));
   else if (DEP_FILTER === '待收') list = deposits.filter(d => d.type === '收' && ['待收缴','部分收'].includes(d.status));
   else if (DEP_FILTER === '已退') list = deposits.filter(d => d.status === '已退' || d.status === '已抵扣');
   else if (DEP_FILTER === '待退') list = deposits.filter(d => d.status === '待退款');
   $('#view').innerHTML = `
-    <div class="section-title">押金管理 <span class="sub">厂房 + 公寓押金统一登记</span></div>
+    <div class="section-title">押金管理 <span class="sub">厂房 + 公寓押金统一登记 · 收押/收款/抵扣/退款全流水</span></div>
     <div class="grid kpi-grid">
       <div class="kpi blue"><div class="label">总笔数</div><div class="value">${deposits.length}</div></div>
       <div class="kpi green"><div class="label">已收押金</div><div class="value">${yuan(received)}</div></div>
       <div class="kpi red"><div class="label">已退押金</div><div class="value">${yuan(refunded)}</div></div>
-      <div class="kpi amber"><div class="label">待退款</div><div class="value">${yuan(pendingRefund)}</div></div>
+      <div class="kpi amber"><div class="label">已抵扣累计</div><div class="value">${yuan(offset)}</div></div>
       <div class="kpi purple"><div class="label">在押余额</div><div class="value">${yuan(held)}</div></div>
     </div>
     <div class="filters">
@@ -1963,37 +1966,43 @@ async function renderDeposits() {
       ${can('deposit_add') ? '<button class="btn" id="addDep" style="margin-left:auto">+ 新增押金</button>' : ''}
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>来源（互联）</th><th>客户</th><th>类型</th><th>金额</th><th>台账状态</th><th>日期</th><th>备注</th><th class="ops">操作</th></tr></thead>
+      <thead><tr><th>来源（互联）</th><th>客户</th><th>类型</th><th>金额</th><th>已抵扣/可用</th><th>台账状态</th><th>经手人</th><th>凭证号</th><th>日期</th><th>备注</th><th class="ops">操作</th></tr></thead>
       <tbody id="depTable"></tbody>
     </table></div>`;
   if (can('deposit_add')) $('#addDep').onclick = () => openDepositModal();
   $('#depTable').innerHTML = list.map(d => {
+    const avail = (d.amount || 0) - (d.deducted_amount || 0);
     let ops = '';
     if (d.type === '收' && (d.status === '待收缴' || d.status === '部分收'))
-      ops = `<button class="btn sm ghost" onclick="markDepositReceived(${d.id})">标记已收</button>`;
+      ops = `<button class="btn sm ghost" onclick="openReceiveModal(${d.id})">收款登记</button>`;
     else if (d.type === '退' && d.status === '待退款')
       ops = `<button class="btn sm primary" onclick="executeRefund(${d.id})">执行退款</button>`;
-    else if (d.status === '已收')
-      ops = '<span class="muted">在押中</span>';
-    else if (d.status === '已退')
-      ops = '<span class="muted">已完成</span>';
-    else
-      ops = '-';
+    else if (d.type === '收' && d.status === '已收' && avail > 0.001)
+      ops = `<button class="btn sm ghost" onclick="openDeductModal(${d.id})">抵扣</button>`;
+    else if (d.type === '收' && d.status === '已抵扣')
+      ops = '<span class="muted">已抵扣完</span>';
+    ops += ` <button class="btn sm ghost" onclick="openLedgerModal(${d.id})">流水</button>`;
     const srcBadge = d.source === 'apartment' ? '<span class="tag t-公寓">公寓</span>' : '<span class="tag t-厂房">厂房</span>';
     const srcRef = d.source === 'apartment' ? ('房间 ' + esc(d.room_no || '-')) : ('合同 ' + esc(d.contract_code || '-'));
     const srcStatus = d.source === 'apartment' ? d.rental_dep_status : d.contract_dep_status;
     const typeLabel = d.type === '收' ? '收款' : (d.type === '退' ? '退款' : d.type);
+    const dedCell = (d.deducted_amount || 0) > 0
+      ? `<div>已抵扣 <b>${yuan(d.deducted_amount)}</b></div><div style="font-size:11px;color:var(--muted)">可用 ${yuan(avail)}</div>`
+      : yuan(avail);
     return `<tr>
       <td>${srcBadge} ${srcRef}<div style="font-size:11px;color:var(--muted);margin-top:3px">来源押金状态：${esc(srcStatus || '-')} ${srcStatus && srcStatus === d.status ? '· 已同步' : ''}</div></td>
       <td>${esc(cname(d.customer_id))}</td>
       <td>${typeLabel}</td>
       <td>${yuan(d.amount)}</td>
+      <td>${dedCell}</td>
       <td>${depStatusTag(d)}</td>
+      <td>${esc(d.operator || '-')}</td>
+      <td>${esc(d.voucher_no || '-')}</td>
       <td>${esc(d.date || '-')}</td>
       <td>${esc(d.note || '-')}</td>
       <td class="ops">${ops}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">无记录</td></tr>';
+  }).join('') || '<tr><td colspan="11" class="empty">无记录</td></tr>';
 }
 
 function depStatusTag(d) {
@@ -2010,25 +2019,74 @@ window.openDepositModal = function(d = {}) {
       <div class="form-row"><label>类型</label>
         <select id="d_type"><option value="收" ${d.type!=='退'?'selected':''}>收款</option><option value="退" ${d.type==='退'?'selected':''}>退款</option></select></div>
       <div class="form-row"><label>合同</label>
-        <select id="d_contract">${CACHE.contracts.map(c => `<option value="${c.id}" ${c.id==d.contract_id?'selected':''}>${esc(c.code)} (${esc(c.type)})</option>`).join('<option value="">-- 无 --</option>')}</select></div>
+        <select id="d_contract">${CACHE.contracts.map(c => `<option value="${c.id}" ${c.id==d.contract_id?'selected':''}>${esc(c.code)} (${esc(c.type)})</option>`).join('')}<option value="">-- 无 --</option></select></div>
       <div class="form-row"><label>金额</label><input type="number" id="d_amount" value="${d.amount||''}" step="0.01" placeholder="0.00"></div>
       <div class="form-row"><label>状态</label>
         <select id="d_status"><option value="已收" ${(d.status||'已收')=='已收'?'selected':''}>已收</option><option value="待收缴" ${d.status=='待收缴'?'selected':''}>待收缴</option><option value="待退款" ${d.status=='待退款'?'selected':''}>待退款</option><option value="已退" ${d.status=='已退'?'selected':''}>已退</option></select></div>
+      <div class="form-row"><label>经手人</label><input id="d_operator" value="${esc(d.operator||'')}" placeholder="收款人"></div>
+      <div class="form-row"><label>支付方式</label><select id="d_method"><option>现金</option><option>转账</option><option>支票</option><option>微信</option><option>支付宝</option></select></div>
+      <div class="form-row"><label>凭证号</label><input id="d_voucher" value="${esc(d.voucher_no||'')}" placeholder="如 SK-2026-001"></div>
       <div class="form-row"><label>日期</label><input type="date" id="d_date" value="${d.date||new Date().toISOString().slice(0,10)}"></div>
       <div class="form-row"><label>备注</label><input id="d_note" value="${esc(d.note||'')}" placeholder="选填"></div>
     </div>`, async () => {
     const body = { type: $('#d_type').value, contract_id: +$('#d_contract').value || null, amount: +$('#d_amount').value, status: $('#d_status').value, date: $('#d_date').value, note: $('#d_note').value };
     const ct = CACHE.contracts.find(x => x.id == body.contract_id);
     if (ct) { body.unit_id = ct.unit_id; body.customer_id = ct.customer_id; }
+    if ($('#d_operator').value) body.operator = $('#d_operator').value;
+    if ($('#d_method').value) body.payment_method = $('#d_method').value;
+    if ($('#d_voucher').value) body.voucher_no = $('#d_voucher').value;
     if (isEdit) await API.put('/api/deposits/' + d.id, body);
     else await API.post('/api/deposits', body);
-    closeModal(); toast(isEdit ? '已更新' : '已新增'); renderDeposits();
+    closeModal(); toast(isEdit ? '已更新' : '已新增（已记流水）'); renderDeposits();
   });
 };
 
-window.markDepositReceived = async function(id) {
-  try { await API.put('/api/deposits/' + id, { status: '已收' }); toast('已标记「已收」，并同步回来源（合同/出租记录）'); renderDeposits(); }
-  catch (e) { toast('标记失败：' + (e.message || e)); }
+const DEP_METHODS = ['现金','转账','支票','微信','支付宝'];
+window.openReceiveModal = async function(id) {
+  const d = await API.get('/api/deposits/' + id);
+  openModal('收款登记 · 押金#' + id, `
+    <div class="form-grid">
+      <div class="form-row"><label>金额</label><input type="number" id="r_amount" value="${d.amount}" step="0.01" readonly></div>
+      <div class="form-row"><label>经手人</label><input id="r_op" value="${esc(d.operator||'')}" placeholder="收款人"></div>
+      <div class="form-row"><label>收款方式</label><select id="r_method">${DEP_METHODS.map(m=>`<option ${m==d.payment_method?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="form-row"><label>凭证号</label><input id="r_vn" value="${esc(d.voucher_no||'')}" placeholder="如 SK-2026-001"></div>
+      <div class="form-row"><label>收款日期</label><input type="date" id="r_date" value="${d.date||new Date().toISOString().slice(0,10)}"></div>
+    </div>`, async () => {
+    const body = { status: '已收', operator: $('#r_op').value, payment_method: $('#r_method').value, voucher_no: $('#r_vn').value, date: $('#r_date').value };
+    await API.put('/api/deposits/' + id, body);
+    closeModal(); toast('已收款登记，并同步回来源（合同/出租记录）'); renderDeposits();
+  });
+};
+
+window.openDeductModal = async function(id) {
+  const d = await API.get('/api/deposits/' + id);
+  const avail = (d.amount || 0) - (d.deducted_amount || 0);
+  const q = (st) => `/api/bills?status=${encodeURIComponent(st)}` + (d.customer_id ? `&customer_id=${d.customer_id}` : (d.unit_id ? `&unit_id=${d.unit_id}` : ''));
+  let bills = [];
+  try {
+    const a = await API.get(q('待收')); const b = await API.get(q('部分收'));
+    bills = (a || []).concat(b || []);
+  } catch (e) { bills = []; }
+  openModal('押金抵扣 · 押金#' + id, `
+    <div class="form-grid">
+      <div class="form-row"><label>在押余额</label><input value="${yuan(avail)}" readonly></div>
+      <div class="form-row"><label>抵扣金额</label><input type="number" id="dd_amt" value="${avail}" step="0.01" max="${avail}"></div>
+      <div class="form-row"><label>关联欠费</label><select id="dd_bill"><option value="">-- 不关联（仅押金出账）--</option>${bills.map(b=>`<option value="${b.id}">${esc(b.item_type)} ${esc(b.period||'')} 欠${yuan((b.amount||0)-(b.paid_amount||0))} (账单#${b.id})</option>`).join('')}</select></div>
+      <div class="form-row"><label>经手人</label><input id="dd_op" placeholder="操作人"></div>
+      <div class="form-row"><label>抵扣说明</label><input id="dd_note" placeholder="如：抵扣X月租金/水电"></div>
+    </div>`, async () => {
+    const amt = +$('#dd_amt').value;
+    if (!(amt > 0) || amt > avail + 0.001) { toast('抵扣金额需在 0~' + avail.toFixed(2) + ' 之间'); return; }
+    const body = { amount: amt, bill_id: +$('#dd_bill').value || null, operator: $('#dd_op').value, note: $('#dd_note').value };
+    await API.post('/api/deposits/' + id + '/deduct', body);
+    closeModal(); toast('抵扣完成' + (body.bill_id ? '（已冲抵账单并生成收款凭证）' : '（仅押金出账）')); renderDeposits();
+  });
+};
+
+window.openLedgerModal = async function(id) {
+  const [d, ledger] = await Promise.all([API.get('/api/deposits/' + id), API.get('/api/deposits/' + id + '/ledger')]);
+  const rows = (ledger || []).map(ledgerItemHtml).join('') || '<div class="empty">暂无流水</div>';
+  openModal('押金流水 · #' + id + '（' + yuan(d.amount) + '）', `<div class="timeline">${rows}</div>`);
 };
 
 window.executeRefund = async function(id) {
@@ -2036,6 +2094,56 @@ window.executeRefund = async function(id) {
   try { await API.put('/api/deposits/' + id, { status: '已退' }); toast('退款已执行，并同步回来源（合同/出租记录）'); renderDeposits(); }
   catch (e) { toast('退款失败：' + (e.message || e)); }
 };
+
+// 押金流水单条渲染（被 流水弹窗 与 合同/出租详情时间线 复用）
+function ledgerItemHtml(l) {
+  return `<div class="tl-item">
+      <div class="tl-dot ${l.action}"></div>
+      <div class="tl-body">
+        <div class="tl-head"><b>${esc(l.action)}</b> <span class="${l.amount<0?'neg':'pos'}">${l.amount>=0?'+':''}${yuan(l.amount)}</span> <span class="tl-bal">在押余额 ${yuan(l.balance_after)}</span></div>
+        <div class="tl-meta">${esc(l.operator||'-')} · ${esc(l.payment_method||'—')} · 凭证 ${esc(l.voucher_no||'-')} · ${esc(l.created_at||'')}</div>
+        ${l.note ? `<div class="tl-note">${esc(l.note)}</div>` : ''}
+      </div></div>`;
+}
+
+// 合同 / 出租详情里的「押金时间线」：列出关联押金及其全生命周期流水
+async function depositTimelineHtml(sourceType, sourceId) {
+  const deposits = CACHE.deposits || await API.get('/api/deposits');
+  const my = deposits.filter(d => sourceType === 'contract' ? d.contract_id == sourceId : d.rental_id == sourceId);
+  if (!my.length) return '<div class="empty">该记录暂无关联押金</div>';
+  let html = '';
+  for (const d of my) {
+    const ledger = await API.get('/api/deposits/' + d.id + '/ledger');
+    const rows = (ledger || []).map(ledgerItemHtml).join('') || '<div class="empty">暂无流水</div>';
+    const avail = (d.amount || 0) - (d.deducted_amount || 0);
+    html += `<div class="dep-tl-block">
+      <div class="dep-tl-title">押金 #${d.id} · ${yuan(d.amount)} · 状态 ${esc(d.status)} · 可用 ${yuan(avail)}</div>
+      <div class="timeline">${rows}</div></div>`;
+  }
+  return html;
+}
+
+// 合同详情：基本信息 + 押金时间线（合同/出租「双向互联」可视化）
+window.openContractDetail = async function(cid) {
+  const ct = await API.get('/api/contracts/' + cid);
+  const depTimeline = await depositTimelineHtml('contract', cid);
+  openModal('合同详情：' + esc(ct.code), `
+    <div class="form-grid readonly">
+      <div class="form-row"><label>合同号</label><span>${esc(ct.code)}</span></div>
+      <div class="form-row"><label>类型</label><span>${esc(ct.type)}</span></div>
+      <div class="form-row"><label>单元</label><span>${esc(uname(ct.unit_id))}</span></div>
+      <div class="form-row"><label>客户</label><span>${esc(cname(ct.customer_id))}</span></div>
+      <div class="form-row"><label>起止</label><span>${esc(ct.start_date||'-')} ~ ${esc(ct.end_date||'-')}</span></div>
+      <div class="form-row"><label>金额</label><span>${yuan(ct.amount||0)}</span></div>
+      <div class="form-row"><label>押金</label><span>${yuan(ct.deposit||0)}</span></div>
+      <div class="form-row"><label>押金状态</label><span>${esc(ct.deposit_status||'-')}</span></div>
+      <div class="form-row"><label>状态</label><span>${esc(ct.status)}</span></div>
+      <div class="form-row"><label>经办人</label><span>${esc(ct.manager||'-')}</span></div>
+    </div>
+    <div class="section-sub">押金时间线（收押 → 收款 → 抵扣 → 退款）</div>
+    ${depTimeline}`, null, '关闭');
+};
+
 
 // ---------- 工单 ----------
 async function renderWorkOrders() {
